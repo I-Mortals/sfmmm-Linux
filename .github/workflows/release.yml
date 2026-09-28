@@ -51,7 +51,8 @@ jobs:
       - name: Setup pnpm
         uses: pnpm/action-setup@v6
         with:
-          version: 8
+          # 需与 pnpm-lock.yaml 的 lockfileVersion 9.0 匹配（pnpm 8 不识别会忽略锁文件导致依赖漂移）
+          version: 11
 
       - name: Setup Node.js
         uses: actions/setup-node@v6
