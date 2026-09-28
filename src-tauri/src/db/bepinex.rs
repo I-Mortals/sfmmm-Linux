@@ -7,14 +7,16 @@
 //         任务状态持久化到 SQLite bepinex_tasks 表，重启后残留的运行态行
 //         （无进程内任务句柄接管）自动重置为 failed，可重新发起安装。
 //
-// 命令：db_install_bepinex / db_get_bepinex_task
+// 命令：db_install_bepinex / db_get_bepinex_task / db_cancel_bepinex
 //
 // 支持 .7z（sevenz_rust）与 .zip（zip crate，带 zip slip 防护）两种分发格式：
-// 分发点枚举见前端 src/components/common/prereqPoints.js（bepinex=7z，v1=7z，v2=zip）。
+// 分发点枚举见前端 src/components/common/prereqPoints.js（bepinex=7z，v1=7z，v2=7z，
+// 临时文件扩展名均按下载源 URL 的实际扩展名动态分派，见 run_bepinex_task）。
 use std::collections::HashMap;
 use std::fs;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex};
 
 use once_cell::sync::Lazy;
@@ -23,8 +25,7 @@ use serde::Serialize;
 use tauri::Emitter;
 use tokio::task::JoinHandle;
 
-use crate::db::download::{DownloadProgress, ProgressFn, download_file, no_cancel};
-use crate::db::gh::build_client;
+use crate::db::download::{CancelFlag, DownloadProgress, ProgressFn, download_file};
 use crate::db::lanzou;
 use crate::db::subscribe::{open_sqlite, read_game_path};
 
@@ -156,6 +157,30 @@ fn tasks() -> &'static Mutex<HashMap<i64, JoinHandle<()>>> {
     &TASK_HANDLES
 }
 
+// 取消标志表（与 installer.rs CANCEL_FLAGS 同款）：任务 spawn 时创建并存入，
+// db_cancel_bepinex 置位后 download_file 内部的并行子块/单流循环立即停止，
+// 仅 abort 顶层句柄停不掉已 spawn 出去的子块，两者缺一不可。
+static CANCEL_FLAGS: Lazy<Arc<Mutex<HashMap<i64, CancelFlag>>>> =
+    Lazy::new(|| Arc::new(Mutex::new(HashMap::new())));
+
+fn cancel_flags() -> &'static Mutex<HashMap<i64, CancelFlag>> {
+    &CANCEL_FLAGS
+}
+
+/// 前置下载专用 HTTP client：不设总超时（下载耗时不设上限，取消由 CancelFlag 负责），
+/// 仅保留 30s 连接超时防止目标不可达时挂死。引擎自身有子块重试与完整性校验。
+fn build_download_client() -> Result<reqwest::Client, String> {
+    reqwest::Client::builder()
+        .connect_timeout(std::time::Duration::from_secs(30))
+        .user_agent(concat!(
+            "sfmmm/",
+            env!("CARGO_PKG_VERSION"),
+            " (https://github.com/b9348/sfmmm)"
+        ))
+        .build()
+        .map_err(|e| format!("构建 HTTP client 失败: {e}"))
+}
+
 // ── 陈旧任务识别与重置（重启恢复的关键）────────────────────
 // 任务"存活"只由内存 TASK_HANDLES 表判定：进程重启后句柄表为空，
 // DB 里残留的运行态行（pending/downloading/extracting）不会被任何任务接管，
@@ -256,7 +281,7 @@ fn emit_progress(
 }
 
 // ── 主任务体（spawn 执行）──────────────────────────────────
-async fn run_bepinex_task(app_handle: tauri::AppHandle, task_id: i64, url: String) {
+async fn run_bepinex_task(app_handle: tauri::AppHandle, task_id: i64, url: String, cancel: CancelFlag) {
     // 失败辅助：独立 async fn 避免闭包引用 lifetime 问题（同 subscribe.rs 做法）
     async fn fail(app_handle: &tauri::AppHandle, task_id: i64, stage: &str, err: &str) {
         let _ = update_task_status(app_handle, task_id, "failed", 0, 0, 0, stage, Some(err));
@@ -280,15 +305,15 @@ async fn run_bepinex_task(app_handle: tauri::AppHandle, task_id: i64, url: Strin
     //    Range 探测 → 分块并行 / 单流回退，节流上报进度含已下载/总大小/实时速度）
     //
     // 蓝奏云下载源：分享页不是直链，先用 lanzou 模块解析成文件直链
-    // （含 acw_sc__v2 反爬挑战与 30x/meta 多层跳转处理），并从分享页文件名
-    // 推断压缩格式（.7z/.zip）；直链有时效性，解析成功后立即进入下载，
-    // 下载 client 沿用移动端 UA 与解析会话保持一致。
+    // （含 acw_sc__v2 反爬挑战与 30x/meta 多层跳转处理，直链 CDN 也会下发挑战，
+    // 解出的 cookie 须随下载请求携带），并从分享页文件名推断压缩格式（.7z/.zip）；
+    // 直链有时效性，解析成功后立即进入下载，下载 client 沿用移动端 UA 与 cookie。
     let is_lanzou = lanzou::is_lanzou_url(&url);
-    let (download_url, url_ext) = if is_lanzou {
+    let (download_url, url_ext, lz_cookie) = if is_lanzou {
         match lanzou::resolve(&url).await {
-            Ok((direct, name)) => {
+            Ok((direct, name, cookie)) => {
                 let ext = lanzou::ext_from_name(&name).unwrap_or_else(|| "7z".to_string());
-                (direct, ext)
+                (direct, ext, cookie)
             }
             Err(e) => {
                 fail(&app_handle, task_id, "downloading", &format!("蓝奏云链接解析失败: {e}")).await;
@@ -303,12 +328,12 @@ async fn run_bepinex_task(app_handle: tauri::AppHandle, task_id: i64, url: Strin
             .and_then(|name| name.rsplit_once('.').map(|(_, ext)| ext.to_lowercase()))
             .filter(|ext| ext == "zip" || ext == "7z")
             .unwrap_or_else(|| "7z".to_string());
-        (url.clone(), ext)
+        (url.clone(), ext, None)
     };
     let client = match if is_lanzou {
-        lanzou::build_lanzou_download_client(300)
+        lanzou::build_lanzou_download_client(lz_cookie.as_deref())
     } else {
-        build_client(300)
+        build_download_client()
     } {
         Ok(c) => c,
         Err(e) => {
@@ -322,9 +347,14 @@ async fn run_bepinex_task(app_handle: tauri::AppHandle, task_id: i64, url: Strin
         let _ = update_task_status(&app, task_id, "downloading", p.percent, p.downloaded, p.total, "downloading", None);
         emit_progress(&app, task_id, p.percent, p.downloaded, p.total, p.speed, "downloading", "downloading", "");
     });
-    if let Err(e) = download_file(&client, &download_url, &temp_path, 8, on_progress, no_cancel()).await {
-        fail(&app_handle, task_id, "downloading", &e).await;
-        let _ = fs::remove_file(&temp_path);
+    // clone 一份供错误分支检查取消状态（cancel 本体被 download_file 消耗）
+    let cancel_probe = cancel.clone();
+    if let Err(e) = download_file(&client, &download_url, &temp_path, 8, on_progress, cancel).await {
+        // 用户取消：db_cancel_bepinex 已写 cancelled 状态，这里不再覆盖为 failed
+        if !cancel_probe.load(Ordering::Relaxed) {
+            fail(&app_handle, task_id, "downloading", &e).await;
+            let _ = fs::remove_file(&temp_path);
+        }
         return;
     }
 
@@ -391,10 +421,17 @@ pub async fn db_install_bepinex(
         return Ok(serde_json::json!({ "taskId": task_id, "deduplicated": true }));
     }
 
-    // spawn 后台任务
+    // spawn 后台任务（创建取消标志供 db_cancel_bepinex 置位；任务结束后清理，避免表无限增长）
+    let cancel: CancelFlag = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    if let Ok(mut m) = cancel_flags().lock() {
+        m.insert(task_id, cancel.clone());
+    }
     let app = app_handle.clone();
     let handle: JoinHandle<()> = tokio::spawn(async move {
-        run_bepinex_task(app, task_id, url).await;
+        run_bepinex_task(app, task_id, url, cancel).await;
+        if let Ok(mut m) = cancel_flags().lock() {
+            m.remove(&task_id);
+        }
     });
     if let Ok(mut m) = tasks().lock() {
         m.insert(task_id, handle);
@@ -450,4 +487,45 @@ pub async fn db_get_bepinex_task(
         .optional()
         .map_err(|e| format!("查询任务失败: {e}"))?;
     Ok(row.map(|v| v).unwrap_or(serde_json::Value::Null))
+}
+
+/// 取消进行中的前置安装任务（db_install_bepinex 发起的下载/解压）。
+/// 与 db_cancel_update 同款：置位 CancelFlag 让 download_file 内部并行子块尽快停止，
+/// 同时 abort 顶层句柄并写 cancelled 状态。仅 abort 停不掉已 spawn 的子块，两者缺一不可。
+#[tauri::command(rename_all = "snake_case")]
+pub async fn db_cancel_bepinex(
+    app_handle: tauri::AppHandle,
+    task_id: i64,
+) -> Result<serde_json::Value, String> {
+    // 置位取消标志：下载引擎子任务检测到即停止并删半成品文件
+    if let Ok(m) = cancel_flags().lock() {
+        if let Some(flag) = m.get(&task_id) {
+            flag.store(true, Ordering::Relaxed);
+        }
+    }
+    // abort 顶层 future（run_bepinex_task 多半在 await download_file / 解压）
+    let aborted = {
+        if let Ok(mut m) = tasks().lock() {
+            if let Some(h) = m.remove(&task_id) {
+                h.abort();
+                true
+            } else {
+                false
+            }
+        } else {
+            false
+        }
+    };
+    let _ = update_task_status(&app_handle, task_id, "cancelled", 0, 0, 0, "cancelled", Some("用户取消"));
+    emit_progress(&app_handle, task_id, 0, 0, 0, 0, "cancelled", "cancelled", "用户取消");
+    // 兜底删除半成品临时文件（引擎通常已删；abort 时解压阶段可能残留），扩展名不定按前缀匹配
+    let prefix = format!("sfmmm_bepinex_{task_id}.");
+    if let Ok(entries) = fs::read_dir(std::env::temp_dir()) {
+        for entry in entries.flatten() {
+            if entry.file_name().to_string_lossy().starts_with(&prefix) {
+                let _ = fs::remove_file(entry.path());
+            }
+        }
+    }
+    Ok(serde_json::json!({ "cancelled": true, "aborted": aborted }))
 }

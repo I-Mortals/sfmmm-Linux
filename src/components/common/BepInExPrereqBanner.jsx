@@ -11,10 +11,11 @@ import {
   PREREQ_DOWNLOAD_POINTS,
   RECOMMENDED_DOORSTOP_VERSION,
   V1_PREREQ_MARKER,
-  V2_PREREQ_MARKER,
   V2_PREREQ_FONT,
+  V2_PREREQ_VERSION,
   RMMOSAIC_MARKER,
 } from './prereqPoints'
+import { checkV2Prereq } from '../../services/v2PrereqCheck'
 
 export { PREREQ_DOWNLOAD_POINTS, BEPINEX_URL, V1_PREREQ_URL, V2_PREREQ_URL, RMMOSAIC_URL } from './prereqPoints'
 
@@ -64,6 +65,9 @@ const useStyles = makeStyles({
 //   .doorstop_version 版本与推荐版本比对结果（doorstopCompatible），版本不兼容时
 //   即使已安装也提示更换为 SFMMM 推荐版本（RECOMMENDED_DOORSTOP_VERSION）。
 // - prereqKey='v1'：检测游戏根目录 BepInEx/plugins/SFM_custom_mission.dll 是否存在。
+// - prereqKey='v2'：检测 BepInEx/plugins/SFM_custom_mission_v2.dll 是否存在，并以
+//   基准指纹（V2_PREREQ_DLL_MTIME_MS / V2_PREREQ_DLL_SHA256，见 prereqPoints.js）
+//   比对修改时间 + 哈希，判断已装插件是否为旧版本（旧版时提示更新）。
 // 未装则显示警示 banner 与一键安装按钮（下载点来自 PREREQ_DOWNLOAD_POINTS 枚举，
 // 名为"内置下载点"；BepInEx 支持内置 + HuggingFace + 蓝奏云多下载点切换），安装成功后通过
 // onInstalled 回调通知父级刷新目录。
@@ -116,12 +120,13 @@ export function BepInExPrereqBanner({ gamePath, onInstalled, category = 'dll', p
         } catch { /* missing */ }
         setStatus({ installed })
       } else if (prereqKey === 'v2') {
-        // v2 前置：插件 dll 必须存在；中文字体仅中文用户需要检测（其他语言不检测）
+        // v2 前置：插件 dll 必须存在；版本检测（修改时间+哈希复核）与漫游引导共用
+        // checkV2Prereq（见 services/v2PrereqCheck.js）；中文字体仅中文用户检测
         let installed = false
         let fontInstalled = undefined
+        let outdated = false
         try {
-          await stat(`${root}/${V2_PREREQ_MARKER}`)
-          installed = true
+          ;({ installed, outdated } = await checkV2Prereq(gamePath))
         } catch { /* missing */ }
         if (isZh) {
           fontInstalled = false
@@ -130,7 +135,7 @@ export function BepInExPrereqBanner({ gamePath, onInstalled, category = 'dll', p
             fontInstalled = true
           } catch { /* missing */ }
         }
-        setStatus({ installed, fontInstalled })
+        setStatus({ installed, fontInstalled, outdated })
       } else if (prereqKey === 'rmmosaic') {
         // 去马赛克补丁：检测游戏根目录 d3d11.dll 是否存在
         let installed = false
@@ -174,7 +179,13 @@ export function BepInExPrereqBanner({ gamePath, onInstalled, category = 'dll', p
         // 安装完成后重新检测真实文件状态（v2 中文用户会一并刷新字体是否到位）
         check()
         onInstalled?.()
-      } else if (payload.status === 'failed' || payload.status === 'cancelled') {
+      } else if (payload.status === 'cancelled') {
+        // 用户主动取消：静默恢复可安装状态，不作为错误展示
+        setInstalling(false)
+        setStage('')
+        setError('')
+        taskIdRef.current = null
+      } else if (payload.status === 'failed') {
         setInstalling(false)
         setStage('')
         setError(payload.error || String(payload.status))
@@ -231,6 +242,14 @@ export function BepInExPrereqBanner({ gamePath, onInstalled, category = 'dll', p
     }
   }, [points, sourceIndex])
 
+  // 取消进行中的安装任务：后端置位 CancelFlag 停掉下载子块并写 cancelled 状态
+  const cancelInstall = useCallback(async () => {
+    if (taskIdRef.current === null) return
+    try {
+      await invoke('db_cancel_bepinex', { taskId: taskIdRef.current })
+    } catch { /* 任务可能已结束，忽略 */ }
+  }, [])
+
   // 下载/解压进度块（已安装/未安装卡片共用）：显示百分比 + 已下载/总大小 + 实时速度
   const renderProgress = () => (
     installing && (
@@ -245,6 +264,7 @@ export function BepInExPrereqBanner({ gamePath, onInstalled, category = 'dll', p
           )}
           {stage === 'extracting' && extractingLabel}
         </Text>
+        <Button size="small" appearance="subtle" onClick={cancelInstall}>{t('mods.cancelDownload')}</Button>
       </div>
     )
   )
@@ -296,6 +316,23 @@ export function BepInExPrereqBanner({ gamePath, onInstalled, category = 'dll', p
             </Text>
           </div>
         )}
+        {/* v2：插件已装但版本低于基准（修改时间+哈希比对），提示更新并可重装 */}
+        {prereqKey === 'v2' && status.outdated === true && (
+          <div className={styles.prereqRow}>
+            <Warning24Regular style={{ color: tokens.colorStatusWarningForeground1 }} />
+            <Text size="small" className={styles.prereqText} style={{ color: tokens.colorStatusWarningForeground1 }}>
+              {t('mods.v2Outdated', { version: V2_PREREQ_VERSION })}
+            </Text>
+            <Button
+              size="small"
+              icon={installing ? <Spinner size="tiny" /> : <ArrowDownload24Regular />}
+              onClick={() => install()}
+              disabled={installing}
+            >
+              {installing ? installingLabel : t(downloadPoint.name)}
+            </Button>
+          </div>
+        )}
         {/* v2 中文用户：仅字体缺失时提示并可从下载点安装（已安装则不显示） */}
         {prereqKey === 'v2' && isZh && status.fontInstalled === false && (
           <div className={styles.prereqRow}>
@@ -305,7 +342,7 @@ export function BepInExPrereqBanner({ gamePath, onInstalled, category = 'dll', p
             <Button
               size="small"
               icon={installing ? <Spinner size="tiny" /> : <ArrowDownload24Regular />}
-              onClick={install}
+              onClick={() => install()}
               disabled={installing}
             >
               {installing ? installingLabel : t(downloadPoint.name)}
@@ -362,7 +399,7 @@ export function BepInExPrereqBanner({ gamePath, onInstalled, category = 'dll', p
           <Button
             size="small"
             icon={installing ? <Spinner size="tiny" /> : <ArrowDownload24Regular />}
-            onClick={install}
+            onClick={() => install()}
             disabled={installing}
           >
             {installing ? installingLabel : t(downloadPoint.name)}

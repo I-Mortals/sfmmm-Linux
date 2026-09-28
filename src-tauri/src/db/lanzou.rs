@@ -7,6 +7,9 @@
 //   3. 访问 webtp（同样可能触发反爬，复用同一套挑战处理）；
 //   4. 从下载页 HTML 提取直链（vkjxld+hyggid 拼接 / window.location.href / <a>下载）；
 //   5. 手动跟随 30x / meta-refresh 重定向，直到文件流响应，取最终直链。
+//      实测文件直链 CDN（developer4.lanrar.com 等）也可能再次下发 acw_sc__v2
+//      挑战，此处同样计算 cookie 重试；解析得到的 cookie 由调用方在下载阶段
+//      继续携带（build_lanzou_download_client），否则文件请求会被再次挑战。
 //
 // 注意：解析出的直链有时效性，解析成功后应立即下载；
 //       文件名取分享页 <title>（通常即真实文件名，如 BepInEx6.7z），
@@ -53,7 +56,11 @@ pub fn is_lanzou_url(url: &str) -> bool {
 /// 蓝奏云请求共用浏览器请求头（与参考 Python 解析器 8.py 的 session headers 一致）。
 /// 实测蓝奏云 CDN（developer2.lanrar.com 等）只带 UA 会返回 200 HTML 页而非
 /// 302 文件流跳转，必须带 Accept/Accept-Language 等完整头才会给出真实直链。
-fn apply_browser_headers(builder: reqwest::ClientBuilder) -> reqwest::ClientBuilder {
+/// cookie：反爬挑战解出的 acw_sc__v2（直链 CDN 也会下发挑战），有则随默认头携带。
+fn apply_browser_headers(
+    builder: reqwest::ClientBuilder,
+    cookie: Option<&str>,
+) -> reqwest::ClientBuilder {
     use reqwest::header::{HeaderMap, HeaderValue};
     let mut headers = HeaderMap::new();
     headers.insert(
@@ -74,6 +81,11 @@ fn apply_browser_headers(builder: reqwest::ClientBuilder) -> reqwest::ClientBuil
         reqwest::header::UPGRADE_INSECURE_REQUESTS,
         HeaderValue::from_static("1"),
     );
+    if let Some(c) = cookie {
+        if let Ok(v) = HeaderValue::from_str(&format!("acw_sc__v2={c}")) {
+            headers.insert(reqwest::header::COOKIE, v);
+        }
+    }
     builder.default_headers(headers)
 }
 
@@ -85,17 +97,21 @@ fn build_lanzou_client() -> Result<reqwest::Client, String> {
             .timeout(std::time::Duration::from_secs(30))
             .user_agent(MOBILE_UA)
             .redirect(reqwest::redirect::Policy::none()),
+        None,
     )
     .build()
     .map_err(|e| format!("构建蓝奏云解析客户端失败: {e}"))
 }
 
-/// 蓝奏云直链下载 client：移动端 UA + 完整浏览器头（与解析会话一致，避免 CDN 校验失败）
-pub fn build_lanzou_download_client(timeout_secs: u64) -> Result<reqwest::Client, String> {
+/// 蓝奏云直链下载 client：移动端 UA + 完整浏览器头（与解析会话一致，避免 CDN 校验失败），
+/// 并携带解析阶段解出的 acw_sc__v2 cookie（直链 CDN 会对无 cookie 的文件请求再次下发挑战）。
+/// 不设总超时（下载耗时不设上限，取消由 CancelFlag 负责），仅保留 30s 连接超时防挂死。
+pub fn build_lanzou_download_client(cookie: Option<&str>) -> Result<reqwest::Client, String> {
     apply_browser_headers(
         reqwest::Client::builder()
-            .timeout(std::time::Duration::from_secs(timeout_secs))
+            .connect_timeout(std::time::Duration::from_secs(30))
             .user_agent(MOBILE_UA),
+        cookie,
     )
     .build()
     .map_err(|e| format!("构建蓝奏云下载客户端失败: {e}"))
@@ -233,13 +249,15 @@ fn extract_download_from_html(html: &str) -> Option<String> {
 /// 与参考实现的 _follow_redirects 语义一致（最多 5 层）：
 ///   - 30x → 跟随 Location；
 ///   - 200 且 octet-stream / attachment → 当前 URL 即最终直链；
-///   - 200 且 HTML → meta 刷新继续跟，页面内直链则作为新入口继续。
+///   - 200 且 HTML → meta 刷新继续跟，页面内直链则作为新入口继续；
+///     命中 acw_sc__v2 挑战（实测直链 CDN 也会下发）则计算 cookie 重试当前 URL。
 async fn follow_to_direct(
     client: &reqwest::Client,
     url: &str,
     cookie: &mut Option<String>,
 ) -> Result<String, String> {
     let mut current = url.to_string();
+    let mut challenge_solved = false;
     for _ in 0..5 {
         let resp = send_get(client, &current, cookie).await?;
 
@@ -280,6 +298,15 @@ async fn follow_to_direct(
                 .text()
                 .await
                 .map_err(|e| format!("读取跳转页失败: {e}"))?;
+            // acw_sc__v2 反爬挑战：与 get_html 同款处理，计算 cookie 后重试当前 URL
+            // （仅一次，防 cookie 不被接受时死循环；层数上限 5 兜底）
+            if !challenge_solved && (text.contains("var arg1=") || text.contains("acw_sc__v2")) {
+                if let Some(v) = RE_ARG1.captures(&text).and_then(|c| anti_cookie(&c[1])) {
+                    *cookie = Some(v);
+                    challenge_solved = true;
+                    continue;
+                }
+            }
             if let Some(m) = RE_META_URL.captures(&text) {
                 current = absolute_url(&current, &m[1]);
                 continue;
@@ -295,8 +322,10 @@ async fn follow_to_direct(
     Err("蓝奏云下载跳转层数过多".into())
 }
 
-/// 解析蓝奏云分享链接 → (文件直链, 文件名)。直链有时效性，解析后需立即下载。
-pub async fn resolve(share_url: &str) -> Result<(String, String), String> {
+/// 解析蓝奏云分享链接 → (文件直链, 文件名, acw cookie)。
+/// 直链有时效性，解析后需立即下载；cookie 须随下载请求携带（直链 CDN 会再次
+/// 挑战无 cookie 的请求），未触发挑战时为 None。
+pub async fn resolve(share_url: &str) -> Result<(String, String, Option<String>), String> {
     let client = build_lanzou_client()?;
     let mut cookie: Option<String> = None;
 
@@ -318,7 +347,7 @@ pub async fn resolve(share_url: &str) -> Result<(String, String), String> {
         .or_else(|| extract_download_from_html(&html1))
         .ok_or_else(|| "未从下载页提取到直链".to_string())?;
 
-    // 5) 跟随 30x / meta 刷新，直到文件流响应取最终直链
+    // 5) 跟随 30x / meta 刷新 / 反爬挑战，直到文件流响应取最终直链
     let final_url = follow_to_direct(&client, &download_url, &mut cookie).await?;
 
     // 6) 文件名取分享页 <title>（通常即真实文件名，如 BepInEx6.7z）
@@ -327,5 +356,5 @@ pub async fn resolve(share_url: &str) -> Result<(String, String), String> {
         .map(|c| c[1].trim().to_string())
         .unwrap_or_default();
 
-    Ok((final_url, name))
+    Ok((final_url, name, cookie))
 }

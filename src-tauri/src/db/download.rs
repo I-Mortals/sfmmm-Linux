@@ -28,13 +28,8 @@ pub type ProgressFn = Arc<dyn Fn(DownloadProgress) + Send + Sync>;
 
 /// 取消标志：置 true 后所有下载子任务尽快停止并返回 Err，避免取消后残留子任务
 /// 继续写文件（与再次下载并发写同一文件导致安装包损坏）。调用方在 spawn 任务时
-/// 创建并持有，cancel 命令置位。
+/// 创建并持有，cancel 命令置位。无取消需求的调用方传入 `Arc::new(AtomicBool::new(false))` 即可。
 pub type CancelFlag = Arc<AtomicBool>;
-
-/// 构造一个永不会被取消的标志，供无需取消的调用方（如 BepInEx 前置）使用。
-pub fn no_cancel() -> CancelFlag {
-    Arc::new(AtomicBool::new(false))
-}
 
 /// 下载 [start, end] 闭区间到文件对应偏移（独立句柄 + seek，与其它子块互不干扰）。
 /// 内部重试 3 次；成功返回 Ok(())，最终失败返回 Err(())，已写字节数会回退，

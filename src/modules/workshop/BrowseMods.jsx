@@ -3,6 +3,7 @@ import {
   Card, Text, Button, SearchBox,
   Spinner, makeStyles,
   Select, tokens,
+  Dialog, DialogSurface, DialogBody, DialogTitle, DialogContent, DialogActions, DialogTrigger,
 } from '@fluentui/react-components'
 import {
   ArrowClockwise24Regular,
@@ -13,9 +14,12 @@ import { useTranslation } from 'react-i18next'
 import { listMods, getModDetail, getModForEdit, getDeviceId } from '../../services/workshopApi'
 import ModDetailPage from './ModDetailPage'
 import { useAuth } from '../../contexts/useAuth'
+import { useUserNav } from '../../contexts/useUserNav'
 import { usePagePrefetch } from '../../hooks/usePagePrefetch'
 import { EditModPage, CreateModPage } from './MyMods'
 import { getConfig, setConfig } from '../../services/dbHelper'
+import { checkV2Prereq } from '../../services/v2PrereqCheck'
+import { V2_PREREQ_VERSION } from '../../components/common/prereqPoints'
 import { Pagination, AsyncView, LoginDialog, FloatingActions, EmptyState, ItemsPerRowControl } from '../../components'
 import { ModCard } from './ModCard'
 
@@ -86,6 +90,36 @@ export function BrowseMods({ initialModId, initialCommentId, onConsumeNavTarget,
   const initialFetch = useRef(false)
   const rootRef = useRef(null)
   const [overlayRect, setOverlayRect] = useState(null)
+
+  // v2 前置更新提醒（云页 Dialog）：本页激活时检测一次，旧版且未点过「知道了」则弹出。
+  // 「知道了」写 config 永久静默；「前往更新」跳本地模组 v2 页（不写已读——更新成功后
+  // 检测自然转 false，失败则下次进页继续提醒）。
+  const [showV2Update, setShowV2Update] = useState(false)
+  const { openLocalMods } = useUserNav()
+  useEffect(() => {
+    if (!active) return
+    let cancelled = false
+    ;(async () => {
+      try {
+        const [seen, gamePath] = await Promise.all([
+          getConfig('v2_update_reminder_seen'),
+          getConfig('game_path'),
+        ])
+        if (cancelled || !gamePath || seen === '1') return
+        const { outdated } = await checkV2Prereq(gamePath.replace(/\\/g, '/'))
+        if (!cancelled && outdated) setShowV2Update(true)
+      } catch { /* 检测失败静默，不打扰浏览 */ }
+    })()
+    return () => { cancelled = true }
+  }, [active])
+  const dismissV2Update = useCallback(async () => {
+    setShowV2Update(false)
+    try { await setConfig('v2_update_reminder_seen', '1') } catch { /* 记录失败仅影响静默 */ }
+  }, [])
+  const goUpdateV2 = useCallback(() => {
+    setShowV2Update(false)
+    openLocalMods('v2')
+  }, [openLocalMods])
 
   // 从 URL hash 恢复详情页（Ctrl+R 刷新后）或从导航参数进入
   useEffect(() => {
@@ -502,6 +536,24 @@ export function BrowseMods({ initialModId, initialCommentId, onConsumeNavTarget,
       ]} />
 
       <LoginDialog open={loginOpen} onClose={() => setLoginOpen(false)} onSuccess={handleLoginSuccess} />
+
+      {/* v2 前置更新提醒 Dialog */}
+      <Dialog open={showV2Update}>
+        <DialogSurface>
+          <DialogBody>
+            <DialogTitle>{t('mods.v2UpdateTitle')}</DialogTitle>
+            <DialogContent>
+              <Text size="small">{t('mods.v2Outdated', { version: V2_PREREQ_VERSION })}</Text>
+            </DialogContent>
+            <DialogActions>
+              <DialogTrigger disableButtonEnhancement>
+                <Button size="small" appearance="secondary" onClick={dismissV2Update}>{t('guide.gotIt')}</Button>
+              </DialogTrigger>
+              <Button size="small" appearance="primary" onClick={goUpdateV2}>{t('mods.v2GoUpdate')}</Button>
+            </DialogActions>
+          </DialogBody>
+        </DialogSurface>
+      </Dialog>
 
       {detailMod && overlayRect && (
         <div

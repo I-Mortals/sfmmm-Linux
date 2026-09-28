@@ -46,8 +46,8 @@ struct ScanModsResult {
 }
 
 /// SFMMM 实测推荐使用的 Doorstop 版本（BepInEx 6 内置引导器）。
-/// 不同版本实测效果更好（见需求：非 4.3.0 时提示用户更换推荐版本）。
-const RECOMMENDED_DOORSTOP_VERSION: &str = "4.3.0";
+/// 不同版本实测效果更好（见需求：非 4.5.0 时提示用户更换推荐版本）。
+const RECOMMENDED_DOORSTOP_VERSION: &str = "4.5.0";
 
 fn path_to_string(path: PathBuf) -> String {
     path.to_string_lossy().into_owned()
@@ -1611,12 +1611,14 @@ pub fn run() {
             db::db_fetch_latest,
             db::gh::db_gh_latest_release,
             db::hash::db_preflight_mod,
+            db::hash::db_hash_file,
             db::hash::db_set_mod_file_hashes,
             db::installer::db_prepare_update,
             db::installer::db_get_update_status,
             db::installer::db_apply_update,
             db::installer::db_clear_update,
             db::installer::db_cancel_update,
+            db::bepinex::db_cancel_bepinex,
             db::subscribe::db_subscribe_mod,
             db::subscribe::db_list_subscription_tasks,
             db::subscribe::db_cancel_subscription,

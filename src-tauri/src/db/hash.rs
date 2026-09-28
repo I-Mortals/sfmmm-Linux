@@ -27,6 +27,25 @@ pub(crate) fn ensure_mod_files_file_hashes_column<C: Queryable>(conn: &mut C) ->
     }
 }
 
+/// 计算任意本地文件的 SHA-256（十六进制小写），文件不存在时返回 None。
+/// 用途：v2 前置版本指纹复核（前端 BepInExPrereqBanner 以"修改时间早于基准 →
+/// 哈希与基准不一致 → 提示更新"的顺序判断，见 prereqPoints.js 的基准常量）。
+#[tauri::command(rename_all = "snake_case")]
+pub async fn db_hash_file(path: String) -> Result<Option<String>, String> {
+    tokio::task::spawn_blocking(move || {
+        let p = std::path::Path::new(&path);
+        if !p.is_file() {
+            return Ok(None);
+        }
+        let mut f = std::fs::File::open(p).map_err(|e| format!("打开文件失败: {e}"))?;
+        let mut hasher = Sha256::new();
+        std::io::copy(&mut f, &mut hasher).map_err(|e| format!("读取文件失败: {e}"))?;
+        Ok::<_, String>(Some(hex::encode(hasher.finalize())))
+    })
+    .await
+    .map_err(|e| format!("哈希计算任务失败: {e}"))?
+}
+
 /// 字节流 SHA-256 十六进制串
 fn sha256_hex(data: &[u8]) -> String {
     hex::encode(Sha256::digest(data))
