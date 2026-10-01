@@ -1,7 +1,7 @@
 // v2 前置版本检测（供两处复用）：
 //   - BepInExPrereqBanner（本地模组 v2 页前置卡片的"版本低于基准"提示）
 //   - App.jsx 漫游引导（创意工坊「云」页聚光灯提醒更新 v2）
-// 判定逻辑：插件 dll 存在且修改时间早于基准（V2_PREREQ_DLL_MTIME_MS，即 2.3.7
+// 判定逻辑：插件 dll 存在且修改时间早于基准（V2_PREREQ_DLL_MTIME_MS，即 2.3.8
 // 分发包内 dll 的原始 mtime）时，再用哈希复核——与基准哈希一致视为同版本
 // （容忍 FAT/exFAT 时间戳粒度等误差），不一致才判 outdated。
 // 基准常量与发布流程见 prereqPoints.js。

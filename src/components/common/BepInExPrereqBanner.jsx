@@ -221,7 +221,7 @@ export function BepInExPrereqBanner({ gamePath, onInstalled, category = 'dll', p
   }, [downloadPoint.url])
 
   const install = useCallback(async (index) => {
-    // 下载源按钮直接传 index；未传（如 v1/v2 单源场景）时回退到当前选中源
+    // 下载源按钮直接传 index；未传时回退到当前选中源
     const point = points[index] ?? points[sourceIndex] ?? points[0]
     setSourceIndex(index ?? sourceIndex)
     setInstalling(true)
@@ -269,21 +269,24 @@ export function BepInExPrereqBanner({ gamePath, onInstalled, category = 'dll', p
     )
   )
 
-  // 下载源按钮：并列排列，点击即从该源安装/重装（BepInEx 三源；单源前置仅一个按钮）。
+  // 多下载点并列按钮：点击即从该源安装（i18n 键名经 t 翻译，其余直接显示源全拼）
+  const renderPointButtons = () => points.map((p, i) => (
+    <Button
+      key={p.url}
+      size="small"
+      icon={installing && sourceIndex === i ? <Spinner size="tiny" /> : <ArrowDownload24Regular />}
+      onClick={() => install(i)}
+      disabled={installing}
+    >
+      {installing && sourceIndex === i ? installingLabel : (p.name.startsWith('mods.') ? t(p.name) : p.name)}
+    </Button>
+  ))
+
+  // 下载源按钮：并列排列成行，点击即从该源安装/重装（BepInEx 三源；单源前置仅一个按钮）。
   // 按钮文字直接用源全拼（Cloudflare / HuggingFace / Lanzou），不再叫"内置下载点"。
   const renderSourceButtons = () => (
     <div className={styles.prereqRow}>
-      {points.map((p, i) => (
-        <Button
-          key={p.url}
-          size="small"
-          icon={installing && sourceIndex === i ? <Spinner size="tiny" /> : <ArrowDownload24Regular />}
-          onClick={() => install(i)}
-          disabled={installing}
-        >
-          {installing && sourceIndex === i ? installingLabel : (p.name.startsWith('mods.') ? t(p.name) : p.name)}
-        </Button>
-      ))}
+      {renderPointButtons()}
     </div>
   )
 
@@ -323,14 +326,7 @@ export function BepInExPrereqBanner({ gamePath, onInstalled, category = 'dll', p
             <Text size="small" className={styles.prereqText} style={{ color: tokens.colorStatusWarningForeground1 }}>
               {t('mods.v2Outdated', { version: V2_PREREQ_VERSION })}
             </Text>
-            <Button
-              size="small"
-              icon={installing ? <Spinner size="tiny" /> : <ArrowDownload24Regular />}
-              onClick={() => install()}
-              disabled={installing}
-            >
-              {installing ? installingLabel : t(downloadPoint.name)}
-            </Button>
+            {renderPointButtons()}
           </div>
         )}
         {/* v2 中文用户：仅字体缺失时提示并可从下载点安装（已安装则不显示） */}
@@ -339,14 +335,7 @@ export function BepInExPrereqBanner({ gamePath, onInstalled, category = 'dll', p
             <Text size="small" className={styles.prereqText}>
               {`${t('mods.v2FontLabel')}：${t('mods.prereqNotInstalled')}`}
             </Text>
-            <Button
-              size="small"
-              icon={installing ? <Spinner size="tiny" /> : <ArrowDownload24Regular />}
-              onClick={() => install()}
-              disabled={installing}
-            >
-              {installing ? installingLabel : t(downloadPoint.name)}
-            </Button>
+            {renderPointButtons()}
           </div>
         )}
         {/* 常驻"重新安装"（仅 BepInEx）：版本不兼容或想升级时，从所选源一键重装 */}
@@ -396,18 +385,11 @@ export function BepInExPrereqBanner({ gamePath, onInstalled, category = 'dll', p
           <Text size="small" className={styles.prereqText} style={{ color: tokens.colorStatusWarningForeground1 }}>
             {`${t('mods.v2FontLabel')}：${t('mods.prereqNotInstalled')}`}
           </Text>
-          <Button
-            size="small"
-            icon={installing ? <Spinner size="tiny" /> : <ArrowDownload24Regular />}
-            onClick={() => install()}
-            disabled={installing}
-          >
-            {installing ? installingLabel : t(downloadPoint.name)}
-          </Button>
+          {renderPointButtons()}
         </div>
       )}
       {error && <Text size="small" className={styles.prereqText} style={{ color: tokens.colorStatusDangerForeground1 }}>{localizeError(t, error)}</Text>}
-      {/* 下载源按钮：并列排列，点击即从该源安装（BepInEx 三源各一个按钮） */}
+      {/* 下载源按钮：并列排列，点击即从该源安装（每个下载源一个按钮） */}
       {renderSourceButtons()}
       {/* 手动安装说明仅限 BepInEx 前置（作者官网链接及其描述仅适用于该前置） */}
       {prereqKey === 'bepinex' && (

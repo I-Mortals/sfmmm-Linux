@@ -3,7 +3,8 @@
 // 蓝奏云分享页不是直链，需经过多层跳转与反爬挑战（移植自参考 Python 解析器）：
 //   1. 移动端 UA 访问分享页；命中 acw_sc__v2 反爬挑战（var arg1='...'）时
 //      按 ACW_M/ACW_P 常量计算 cookie，带 cookie 重试；
-//   2. 从分享页 HTML 提取 webtp 跳转链接（<a href="...webtp=...">）；
+//   2. 从分享页 HTML 提取 webtp 跳转链接（现版为 JS 动态赋值 link.href='/tp/...?webtp=...'，
+//      旧版为 <a href="...webtp=...">，正则两种形式均兼容）；
 //   3. 访问 webtp（同样可能触发反爬，复用同一套挑战处理）；
 //   4. 从下载页 HTML 提取直链（vkjxld+hyggid 拼接 / window.location.href / <a>下载）；
 //   5. 手动跟随 30x / meta-refresh 重定向，直到文件流响应，取最终直链。
@@ -30,8 +31,10 @@ const ACW_M: [usize; 40] = [
 const ACW_P: &str = "3000176000856006061501533003690027800375";
 
 static RE_ARG1: Lazy<Regex> = Lazy::new(|| Regex::new(r"var arg1='([A-F0-9]+)'").unwrap());
+// 匹配 href 赋值（不限 <a> 标签）：现版分享页通过 JS 动态赋值 link.href='/tp/...?webtp=...'，
+// 旧版为 <a href="...webtp=..."> 静态标签，两种形式均覆盖
 static RE_WEBTP: Lazy<Regex> =
-    Lazy::new(|| Regex::new(r#"<a[^>]+href="([^"]+webtp=[^"]+)""#).unwrap());
+    Lazy::new(|| Regex::new(r#"href\s*=\s*["']([^"']+webtp=[^"']+)["']"#).unwrap());
 static RE_VKJXLD: Lazy<Regex> =
     Lazy::new(|| Regex::new(r"var vkjxld\s*=\s*'([^']+)'").unwrap());
 static RE_HYGGID: Lazy<Regex> =
