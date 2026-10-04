@@ -81,6 +81,16 @@ const POOL_ACQUIRE_TIMEOUT_SECS: u64 = 5;
 const ZOMBIE_IDLE_SECS: u64 = 120;
 // 两次僵尸清理的最小间隔，避免连接风暴下反复 KILL
 const CLEANUP_COOLDOWN_SECS: i64 = 60;
+// 周期性僵尸清理间隔：即使近期无连接失败也兜底清理。
+// 动机：清理原本仅在「失败后首次建连」触发，安静期僵尸会缓慢累积——
+// 最坏情况全部 max_user_connections 名额被僵尸占满，新连接在代理层被拒，
+// 任何实例都建不了连，「失败后清理」的前提永远无法满足，只能等名额释放。
+// 释放机制未完全确认：曾观测到一次 1226 拒绝后约 190s 重试成功，可能是
+// SQLPub 代理计数窗口重置（报错中含截断的 "reset utime: 179..."），也可能
+// 只是恰好有活跃连接断开；若两者皆无，上界是服务器 wait_timeout（8h）。
+// 周期清理保证只要有任一实例能正常建连，僵尸就永远积累不到占满名额的程度，
+// 使上述锁死窗口在实践上不可达。
+const PERIODIC_CLEANUP_SECS: i64 = 600;
 
 /// 数据库调用失败的可判别类别，前端据此展示差异化提示。
 /// 以固定前缀编码进错误字符串（`[DBERR:<code>] <人类可读信息>`），
@@ -137,7 +147,9 @@ fn safe_db_err_brief(e: &mysql::Error) -> String {
 /// 从 mysql crate 错误对象判定类别（可读到结构化 code 时更准确）
 fn classify_mysql_error(e: &mysql::Error) -> DbErrorKind {
     if let mysql::Error::MySqlError(me) = e {
-        if me.code == 1040 {
+        // 1040 = 服务器连接数上限；1226 = 用户级资源上限（max_user_connections，
+        // SQLPub 代理实际返回的形态）。两者对用户语义相同：稍后重试即可。
+        if me.code == 1040 || me.code == 1226 {
             return DbErrorKind::TooManyConnections;
         }
     }
@@ -183,7 +195,8 @@ struct ManagedPoolInner {
     last_activity: AtomicI64,
     checker_started: AtomicBool,
     /// 最近是否出现过连接失败（get_conn 失败/ping 探活失败/软超时）。
-    /// 置位后下一次成功建连时顺手清理服务器端僵尸连接（带冷却）。
+    /// 置位后下一次成功建连时立即清理服务器端僵尸连接（带冷却）；
+    /// 即使标志未置位，超过 PERIODIC_CLEANUP_SECS 也会周期性兜底清理。
     recent_failure: AtomicBool,
     /// 上次僵尸清理时间戳（秒），用于冷却
     last_cleanup: AtomicI64,
@@ -273,16 +286,28 @@ impl ManagedPoolInner {
         killed
     }
 
-    /// 最近出现过连接失败时，在成功建连的连接上顺手清理僵尸连接（冷却期内跳过）
-    fn maybe_cleanup_zombies(&self, conn: &mut PooledConn) {
-        if !self.recent_failure.swap(false, Ordering::Relaxed) {
-            return;
+    /// 僵尸清理触发判定：recent_failure 置位 → 立即清理（失败驱动）；
+    /// 否则距上次清理超过 PERIODIC_CLEANUP_SECS → 也清理（周期兜底）。
+    /// 两路径共用 CLEANUP_COOLDOWN_SECS 冷却，冷却期内一律跳过。
+    /// 返回 true 表示本次应执行清理。
+    fn should_cleanup(&self, now: i64) -> bool {
+        let failed = self.recent_failure.swap(false, Ordering::Relaxed);
+        if failed {
+            // 失败驱动的清理不受周期间隔约束，仅受最小冷却约束
+            return now - self.last_cleanup.load(Ordering::Relaxed) >= CLEANUP_COOLDOWN_SECS;
         }
+        now - self.last_cleanup.load(Ordering::Relaxed) >= PERIODIC_CLEANUP_SECS
+    }
+
+    /// 成功建连后清理服务器端僵尸连接：失败后立即触发，或每
+    /// PERIODIC_CLEANUP_SECS 周期兜底触发（冷却期内跳过）。
+    /// 清理失败静默忽略（不影响本次查询）。
+    fn maybe_cleanup_zombies(&self, conn: &mut PooledConn) {
         let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap_or_default()
             .as_secs() as i64;
-        if now - self.last_cleanup.load(Ordering::Relaxed) < CLEANUP_COOLDOWN_SECS {
+        if !self.should_cleanup(now) {
             return;
         }
         self.last_cleanup.store(now, Ordering::Relaxed);
@@ -292,6 +317,14 @@ impl ManagedPoolInner {
 
 impl ManagedPool {
     fn new(db_url: String) -> Self {
+        // last_cleanup 初始化为进程启动时刻（而非 0）：
+        // 若从 0 起，首次成功建连会立即触发僵尸清理（PROCESSLIST 两次串行往返），
+        // 把首屏第一查询无谓拖慢数百 ms~1s；从启动时刻起，首次清理自然落在
+        // PERIODIC_CLEANUP_SECS 之后，不影响首屏。
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs() as i64;
         Self {
             inner: Arc::new(ManagedPoolInner {
                 pool: Mutex::new(None),
@@ -299,7 +332,7 @@ impl ManagedPool {
                 last_activity: AtomicI64::new(0),
                 checker_started: AtomicBool::new(false),
                 recent_failure: AtomicBool::new(false),
-                last_cleanup: AtomicI64::new(0),
+                last_cleanup: AtomicI64::new(now),
                 serial: AsyncMutex::new(()),
             }),
         }
@@ -693,6 +726,49 @@ pub(crate) fn get_user_permissions<C: Queryable>(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 周期清理判定：失败驱动仅受冷却约束，周期兜底受周期间隔约束。
+    /// should_cleanup 只做判定，last_cleanup 的写入在 maybe_cleanup_zombies
+    /// （需真实连接），故此处手动 store 模拟各时间点。
+    #[test]
+    fn should_cleanup_failure_and_periodic_paths() {
+        let mp = ManagedPool::new("mysql://user:pass@localhost:1/db".to_string());
+        let inner = &*mp.inner;
+
+        // last_cleanup 初始化为进程启动时刻（而非 0），首次建连不触发清理，
+        // 避免首屏第一查询被 PROCESSLIST 往返拖慢
+        let init = inner.last_cleanup.load(Ordering::Relaxed);
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs() as i64;
+        assert!(init > 0 && now >= init && now - init < 60);
+
+        // 测试统一手动设定基准模拟各时间点
+        let t0 = 1_000_000;
+        inner.last_cleanup.store(t0, Ordering::Relaxed);
+
+        // 无失败 + 冷却/周期均未到：不清理
+        assert!(!inner.should_cleanup(t0 + CLEANUP_COOLDOWN_SECS - 1));
+        assert!(!inner.should_cleanup(t0 + PERIODIC_CLEANUP_SECS - 1));
+
+        // 无失败 + 周期已到：清理（即使从未失败）
+        assert!(inner.should_cleanup(t0 + PERIODIC_CLEANUP_SECS));
+
+        // 模拟 t1 时刻刚清理过（周期触发后由 maybe_cleanup_zombies 写入）
+        let t1 = t0 + PERIODIC_CLEANUP_SECS;
+        inner.last_cleanup.store(t1, Ordering::Relaxed);
+
+        // 失败置位 + 冷却未过：失败驱动仍受最小冷却约束
+        inner.recent_failure.store(true, Ordering::Relaxed);
+        assert!(!inner.should_cleanup(t1 + 1));
+        // swap 已消费标志，不能残留
+        assert!(!inner.recent_failure.load(Ordering::Relaxed));
+
+        // 失败置位 + 冷却已过：立即清理
+        inner.recent_failure.store(true, Ordering::Relaxed);
+        assert!(inner.should_cleanup(t1 + CLEANUP_COOLDOWN_SECS));
+    }
 
     #[test]
     fn semver_cmp_equal() {
