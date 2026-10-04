@@ -1,0 +1,121 @@
+name: Build & Release (Linux AppImage)
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: build-linux-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Build AppImage
+    runs-on: ubuntu-22.04
+    timeout-minutes: 40
+    permissions:
+      contents: read
+
+    outputs:
+      version: ${{ steps.get_version.outputs.version }}
+      tag_name: ${{ steps.get_version.outputs.tag_name }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Get version
+        id: get_version
+        shell: bash
+        run: |
+          VERSION=$(node -p "require('./src-tauri/tauri.conf.json').version")
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "tag_name=v$VERSION" >> "$GITHUB_OUTPUT"
+          echo "Detected version: v$VERSION"
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v6
+        with:
+          # 与 pnpm-lock.yaml 的 lockfileVersion 9.0 匹配
+          version: 11
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: 24
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      - name: Install Linux system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            build-essential \
+            curl \
+            wget \
+            file \
+            libxdo-dev \
+            libssl-dev \
+            libayatana-appindicator3-dev \
+            librsvg2-dev \
+            patchelf \
+            libfuse2
+
+      - name: Install dependencies
+        run: pnpm install
+
+      - name: Create .env
+        shell: bash
+        run: |
+          echo "DB_URL=${{ secrets.DB_URL }}" > src-tauri/.env
+          echo "IMGBED_URL=${{ secrets.IMGBED_URL }}" >> src-tauri/.env
+          echo "IMGBED_TOKEN=${{ secrets.IMGBED_TOKEN }}" >> src-tauri/.env
+          echo "DB_ENC_KEY=${{ secrets.DB_ENC_KEY }}" >> src-tauri/.env
+          echo "VITE_LATEST_URL=${{ secrets.IMGBED_URL }}/file/sfm/installer/latest.json" > .env
+
+      - name: Remove local Cargo config for CI
+        run: rm -f src-tauri/.cargo/config.toml
+
+      - name: Build Tauri (AppImage)
+        # 用 --bundles 覆盖 tauri.conf.json 里的 targets(nsis)，避免影响 Windows 构建
+        run: pnpm tauri build --bundles appimage
+        env:
+          HTTPS_PROXY: ''
+          HTTP_PROXY: ''
+
+      - name: Upload AppImage as artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: linux-appimage
+          path: src-tauri/target/release/bundle/appimage/*.AppImage
+          if-no-files-found: error
+
+  release:
+    name: Attach AppImage to Release
+    needs: [build]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Download AppImage
+        uses: actions/download-artifact@v8
+        with:
+          name: linux-appimage
+          path: appimage
+
+      - name: Attach to GitHub Release
+        # 与 Windows 工作流共用同一 tag；tag 已存在则追加资产，不存在则创建
+        uses: softprops/action-gh-release@v3
+        with:
+          tag_name: ${{ needs.build.outputs.tag_name }}
+          files: appimage/*.AppImage
+          fail_on_unmatched_files: true
