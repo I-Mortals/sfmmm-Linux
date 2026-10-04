@@ -296,7 +296,7 @@ async fn run_bepinex_task(app_handle: tauri::AppHandle, task_id: i64, url: Strin
             return;
         }
     };
-    let target_dir = game_path.trim_end_matches('\\').to_string();
+    let target_dir = game_path.trim_end_matches(|c| c == '/' || c == '\\').to_string();
 
     let _ = update_task_status(&app_handle, task_id, "downloading", 0, 0, 0, "downloading", None);
     emit_progress(&app_handle, task_id, 0, 0, 0, 0, "downloading", "downloading", "");

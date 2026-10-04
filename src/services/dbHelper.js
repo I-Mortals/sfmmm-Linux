@@ -4,6 +4,7 @@
  */
 
 import Database from '@tauri-apps/plugin-sql'
+import { joinPath, trimTrailingSep } from './pathUtils'
 
 let dbPromise = null
 
@@ -53,7 +54,10 @@ export const GAME_EXE_NAME = 'SecretFlasherManaka.exe'
  *
  * 不落库：唯一决定安装/启动位置的是 game_path，Rust 端 launch_game 也是自行
  * join 文件名，故无需持久化一个派生值（存了反而要处处维护它不被改目录改陈旧）。
+ *
+ * 用平台原生分隔符拼接：旧实现硬编码 `\`，在 Linux（AppImage）上会拼出
+ * ".../mimic\SecretFlasherManaka.exe"，exists() 恒为 false，误报「未找到 exe」。
  */
 export function deriveExePath(gamePath) {
-  return gamePath ? `${gamePath.replace(/[\\/]+$/, '')}\\${GAME_EXE_NAME}` : ''
+  return gamePath ? joinPath(trimTrailingSep(gamePath), GAME_EXE_NAME) : ''
 }

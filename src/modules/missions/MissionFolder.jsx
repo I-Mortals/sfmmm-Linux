@@ -10,6 +10,7 @@ import { getModDetail } from '../../services/workshopApi'
 import { installMod } from '../../services/installMod'
 import { AsyncView, EmptyState, BepInExPrereqBanner, ItemsPerRowControl } from '../../components'
 import { getConfig, setConfig } from '../../services/dbHelper'
+import { joinPath, toNativePath } from '../../services/pathUtils'
 import { LANG_LABELS } from '../../i18n/languages'
 import { RatingStarsDisplay } from '../../components/common/RatingStars'
 
@@ -325,10 +326,10 @@ function categoryFromSubfolder(subfolder) {
 
 async function openInExplorer(dir, items) {
   try {
-    // Windows 需要原生反斜杠路径
-    const normalized = dir.replace(/\//g, '\\')
+    // 归一化为当前平台原生分隔符（Windows 需反斜杠，Linux/macOS 用斜杠）
+    const normalized = toNativePath(dir)
     // selected_items 为相对 open 目录的名称列表，供 SHOpenFolderAndSelectItems 一次性高亮多个
-    const selected = (items || []).map(x => x.replace(/\//g, '\\'))
+    const selected = (items || []).map(x => toNativePath(x))
     await invoke('open_folder', { path: normalized, selected_items: selected })
   } catch (e) {
     console.error('Failed to open folder:', e)
@@ -851,7 +852,7 @@ export function MissionFolder({ config, subfolder, onUninstall, focusModKey }) {
 
   const toggleItemEnabled = useCallback(async (filePath) => {
     try {
-      const [newIsBanned, newPath] = await invoke('toggle_mod_enabled', { path: filePath.replace(/\//g, '\\') })
+      const [newIsBanned, newPath] = await invoke('toggle_mod_enabled', { path: toNativePath(filePath) })
       // 更新文件列表中的状态
       setFiles(prev => prev.map(f => {
         const fullPath = `${currentDir}/${f.name}`
@@ -871,7 +872,7 @@ export function MissionFolder({ config, subfolder, onUninstall, focusModKey }) {
     if (!currentDir) return
     setLoading(true)
     try {
-      await invoke('batch_toggle_mod_enabled', { dir: currentDir.replace(/\//g, '\\'), ban })
+      await invoke('batch_toggle_mod_enabled', { dir: toNativePath(currentDir), ban })
       await loadFiles()
     } catch (e) {
       console.error('Failed to batch toggle:', e)
@@ -905,7 +906,7 @@ export function MissionFolder({ config, subfolder, onUninstall, focusModKey }) {
       .filter(f => !f.isDir && (ban ? !f.isBanned : f.isBanned))
     if (targets.length === 0) return
     const results = await Promise.allSettled(
-      targets.map(f => invoke('toggle_mod_enabled', { path: `${currentDir}/${f.name}`.replace(/\//g, '\\') }))
+      targets.map(f => invoke('toggle_mod_enabled', { path: joinPath(currentDir, f.name) }))
     )
     const renamed = new Map() // 旧完整路径 -> 新文件名
     results.forEach((r, i) => {

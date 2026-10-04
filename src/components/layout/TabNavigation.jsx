@@ -36,6 +36,7 @@ import { useAuth } from '../../contexts/useAuth'
 import { useUserNav } from '../../contexts/useUserNav'
 import { useNotification } from '../../contexts/NotificationContext'
 import { getConfig } from '../../services/dbHelper'
+import { IS_WINDOWS } from '../../services/pathUtils'
 import { getAvatarUrl } from '../../utils/avatars'
 import { LoginDialog, ProfileDialog } from '../../components'
 import { WinNavigationView } from './WinNavigationView'
@@ -145,10 +146,12 @@ export function TabNavigation({ value, onChange, isCollapsed, onToggleCollapse, 
     },
   ]
 
-  // 底部菜单：启动游戏紧跟设置，底部顺序为 启动游戏 → 设置 → 版本号
-  const footerMenuItems = [
-    { value: LAUNCH_VALUE, label: t('nav.launchGame'), icon: <Play24Regular /> },
-  ]
+  // 底部菜单：启动游戏紧跟设置，底部顺序为 启动游戏 → 设置 → 版本号。
+  // 非 Windows（AppImage/Linux）：游戏是 Windows PE，直接 exec 无法启动，需用户
+  // 自行经兼容层（Steam/Proton 等）启动，故隐藏该入口。Windows 行为保持不变。
+  const footerMenuItems = IS_WINDOWS
+    ? [{ value: LAUNCH_VALUE, label: t('nav.launchGame'), icon: <Play24Regular /> }]
+    : []
 
   const handleLogout = () => {
     logout()

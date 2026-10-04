@@ -1,6 +1,7 @@
 import { open } from '@tauri-apps/plugin-dialog'
 import { readFile, readDir } from '@tauri-apps/plugin-fs'
 import { collectSelection } from '../modules/workshop/collectSelection'
+import { joinPath } from '../services/pathUtils'
 
 function getRelativePath(filePath, baseDir) {
   const normalizedFile = filePath.replace(/\\/g, '/')
@@ -27,9 +28,9 @@ export async function selectModFiles({ category, gamePath }) {
       for (const entry of entries) {
         const fullPath = prefix ? `${prefix}/${entry.name}` : entry.name
         if (entry.isDirectory) {
-          await collectDir(`${dirPath}/${entry.name}`, fullPath)
+          await collectDir(joinPath(dirPath, entry.name), fullPath)
         } else if (entry.isFile) {
-          const data = await readFile(`${dirPath}/${entry.name}`)
+          const data = await readFile(joinPath(dirPath, entry.name))
           files.push({ name: fullPath, data, size: data.byteLength })
         }
       }
@@ -63,7 +64,7 @@ export async function selectModFiles({ category, gamePath }) {
   const selected = await open({ multiple: true, filters: [{ name: 'Mod Files', extensions: ['json', 'code', 'txt', 'zip'] }] })
   if (!selected || selected.length === 0) return []
   const files = []
-  const baseDir = category === 'v1' && gamePath ? `${gamePath}\\CustomMissions` : null
+  const baseDir = category === 'v1' && gamePath ? joinPath(gamePath, 'CustomMissions') : null
   for (const filePath of selected) {
     const data = await readFile(filePath)
     const name = filePath.split(/[/\\]/).pop()

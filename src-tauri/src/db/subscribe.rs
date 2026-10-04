@@ -25,6 +25,28 @@ use zip::ZipArchive;
 
 use crate::db::{with_conn_pool, DbState};
 
+// ── 跨平台路径拼接 ──────────────────────────────────────────
+// Rust 端统一用系统原生分隔符（Linux/macOS 为 '/'，Windows 为 '\'）。旧代码硬编码
+// '\'，在 Linux 上会拼出 ".../mimic\BepInEx\plugins" 这种含字面反斜杠的非法路径
+// （被当作单个目录名），导致安装目录错位、文件探测恒失败。段内的 '/' 与 '\' 一律
+// 视为分隔符拆分后用原生分隔符重组。
+
+/// 去掉路径末尾的一个或多个分隔符（'/' 或 '\'）。
+fn trim_sep(p: &str) -> &str {
+    p.trim_end_matches(|c| c == '/' || c == '\\')
+}
+
+/// 用系统原生分隔符把 base 与若干路径段拼成路径。
+fn join_native(base: &str, segments: &[&str]) -> String {
+    let mut p = PathBuf::from(base);
+    for seg in segments {
+        for part in seg.split(|c| c == '/' || c == '\\').filter(|s| !s.is_empty()) {
+            p.push(part);
+        }
+    }
+    p.to_string_lossy().into_owned()
+}
+
 // ── 全局任务句柄表（取消用）──────────────────────────────
 // 用 once_cell + 函数封装而非 lazy_static 宏，避免宏展开在闭包里类型推断崩
 use once_cell::sync::Lazy;
@@ -127,22 +149,22 @@ fn install_files_present(base: &str, mod_key: &str, category: &str, manifest: &s
         return None;
     }
     let root = match category {
-        "dll" => format!("{}\\BepInEx\\plugins", base),
-        "v2" => format!("{}\\CustomMissions2\\{}", base, mod_key),
+        "dll" => join_native(base, &["BepInEx", "plugins"]),
+        "v2" => join_native(base, &["CustomMissions2", mod_key]),
         "composite" => {
             // manifest 为相对游戏根的全路径，先按首个文件推断收窄后的顶层目录
-            let first = files[0].replace('/', "\\");
-            let segs: Vec<&str> = first.split('\\').collect();
+            let first = files[0].replace('\\', "/");
+            let segs: Vec<&str> = first.split('/').collect();
             if segs.len() > 1 {
-                format!("{}\\{}", base, segs[..segs.len() - 1].join("\\"))
+                join_native(base, &segs[..segs.len() - 1])
             } else {
                 base.to_string()
             }
         }
-        _ => format!("{}\\CustomMissions", base), // v1 及兜底
+        _ => join_native(base, &["CustomMissions"]), // v1 及兜底
     };
     for f in &files {
-        let rel = f.replace('/', "\\");
+        let rel = f.replace('\\', "/");
         let full = PathBuf::from(&root).join(&rel);
         if !full.is_file() {
             return Some(format!("目标文件不存在: {}", full.display()));
@@ -307,7 +329,7 @@ fn extract_zip_recursive(
         let segs: Vec<&str> = first.split('/').collect();
         if segs.len() > 1 {
             let top_dir_segs = &segs[..segs.len() - 1];
-            final_target = format!("{}\\{}", base, top_dir_segs.join("\\"));
+            final_target = join_native(base, top_dir_segs);
         }
     }
 
@@ -458,14 +480,14 @@ async fn run_subscribe_task(
             return;
         }
     };
-    let base = game_path.trim_end_matches('\\').to_string();
-    let plugins_dir = format!("{}\\BepInEx\\plugins", base);
+    let base = trim_sep(&game_path).to_string();
+    let plugins_dir = join_native(&base, &["BepInEx", "plugins"]);
 
     let target_dir = match category.as_str() {
-        "v2" => format!("{}\\CustomMissions2\\{}", base, mod_key),
+        "v2" => join_native(&base, &["CustomMissions2", mod_key.as_str()]),
         "dll" => plugins_dir.clone(),
         "composite" => base.clone(),
-        _ => format!("{}\\CustomMissions", base), // v1 及兜底
+        _ => join_native(&base, &["CustomMissions"]), // v1 及兜底
     };
 
     // 2) 确保目标目录存在
@@ -704,7 +726,7 @@ pub async fn db_subscribe_mod(
                     // 故 is_some() 才是"需要重装"。
                     match read_game_path(&app_handle) {
                         Ok(game_path) => {
-                            let base = game_path.trim_end_matches('\\');
+                            let base = trim_sep(&game_path);
                             install_files_present(base, &mod_key, &category, &manifest).is_some()
                         }
                         // 游戏目录本身无效：交由重新入队的任务在 run_subscribe_task 里

@@ -977,14 +977,26 @@ fn scan_mods(game_path: String) -> Result<ScanModsResult, String> {
 }
 
 // ─────────────────────────── 存档管理 ───────────────────────────
-// 存档目录固定位于系统用户目录下：
+// 存档目录：游戏是 Windows 程序，运行时存档固定落在系统用户目录下：
 //   C:\Users\<用户名>\AppData\LocalLow\SheableSoft\SecretFlasherManaka\SaveData
 // 目录内文件约定：
 //   - 0-x.sd（x 为数字）: 游戏存档文件
 //   - s.sd              : 游戏设置文件
 //   - <任意>.sd.bak     : 存档备份文件（由本应用备份生成）
+//
+// Linux/Steam Deck：游戏经 Proton 运行时，上面的 C:\ 实际映射到 Steam 的
+// compatdata 前缀内（见 find_proton_save_dir）。找到就用真实目录，找不到
+// （如游戏尚未在 Proton 下运行过）则回退到 Windows 风格路径，UI 展示空态。
 
 fn save_data_dir() -> Result<PathBuf, String> {
+    // Linux：优先在 Steam/Proton 前缀里定位真实存档目录
+    #[cfg(target_os = "linux")]
+    {
+        if let Some(dir) = find_proton_save_dir() {
+            return Ok(dir);
+        }
+    }
+
     let profile = std::env::var("USERPROFILE")
         .or_else(|_| std::env::var("HOME"))
         .map_err(|_| "无法获取用户目录（USERPROFILE/HOME）".to_string())?;
@@ -994,6 +1006,106 @@ fn save_data_dir() -> Result<PathBuf, String> {
         .join("SheableSoft")
         .join("SecretFlasherManaka")
         .join("SaveData"))
+}
+
+/// Linux：在 Steam 的 Proton 前缀（compatdata）里定位本游戏的存档目录。
+/// 游戏经 Proton 运行时，Windows 用户目录会被映射到：
+///   <steam library>/steamapps/compatdata/<appid>/pfx/drive_c/users/<user>/
+///       AppData/LocalLow/SheableSoft/SecretFlasherManaka/SaveData
+/// appid 依游戏添加方式（Steam 正版 / 非 Steam 快捷方式）而异、无法可靠推算，
+/// 故直接遍历所有 compatdata 前缀；并解析各库的 libraryfolders.vdf 以覆盖非默认
+/// 库目录（含其它磁盘与 Flatpak Steam）。命中多个时取最近修改的一份（当前在用）。
+#[cfg(target_os = "linux")]
+fn find_proton_save_dir() -> Option<PathBuf> {
+    let tail = std::path::Path::new("AppData")
+        .join("LocalLow")
+        .join("SheableSoft")
+        .join("SecretFlasherManaka")
+        .join("SaveData");
+
+    // 1) 常见 Steam 安装位置下的 steamapps 目录
+    let mut steamapps_dirs: Vec<PathBuf> = Vec::new();
+    if let Ok(home) = std::env::var("HOME") {
+        let home = PathBuf::from(home);
+        for rel in [
+            ".steam/steam/steamapps",
+            ".local/share/Steam/steamapps",
+            ".var/app/com.valvesoftware.Steam/data/Steam/steamapps",
+        ] {
+            let p = home.join(rel);
+            if p.is_dir() {
+                steamapps_dirs.push(p);
+            }
+        }
+    }
+
+    // 2) 解析 libraryfolders.vdf，补上自定义库路径
+    let mut extra: Vec<PathBuf> = Vec::new();
+    for sa in &steamapps_dirs {
+        let Ok(text) = fs::read_to_string(sa.join("libraryfolders.vdf")) else {
+            continue;
+        };
+        for line in text.lines() {
+            if let Some(val) = vdf_quoted_after(line, "path") {
+                let lib = PathBuf::from(val).join("steamapps");
+                if lib.is_dir() {
+                    extra.push(lib);
+                }
+            }
+        }
+    }
+    for e in extra {
+        if !steamapps_dirs.iter().any(|d| same_dir(d, &e)) {
+            steamapps_dirs.push(e);
+        }
+    }
+
+    // 3) 遍历 compatdata，收集所有已存在的目标 SaveData 目录
+    let mut found: Vec<(SystemTime, PathBuf)> = Vec::new();
+    for sa in &steamapps_dirs {
+        let Ok(apps) = fs::read_dir(sa.join("compatdata")) else {
+            continue;
+        };
+        for app in apps.flatten() {
+            let users = app
+                .path()
+                .join("pfx")
+                .join("drive_c")
+                .join("users");
+            let Ok(users) = fs::read_dir(&users) else {
+                continue;
+            };
+            for user in users.flatten() {
+                let cand = user.path().join(&tail);
+                if cand.is_dir() {
+                    let mtime = fs::metadata(&cand)
+                        .and_then(|m| m.modified())
+                        .unwrap_or(UNIX_EPOCH);
+                    found.push((mtime, cand));
+                }
+            }
+        }
+    }
+    found.sort_by(|a, b| b.0.cmp(&a.0));
+    found.into_iter().next().map(|(_, p)| p)
+}
+
+/// 从 VDF 行中取出 `"key"` 之后的下一个带引号字符串（用于 libraryfolders.vdf）。
+#[cfg(target_os = "linux")]
+fn vdf_quoted_after(line: &str, key: &str) -> Option<String> {
+    let rest = line.trim().strip_prefix(&format!("\"{}\"", key))?;
+    let rest = &rest[rest.find('"')? + 1..];
+    let end = rest.find('"')?;
+    Some(rest[..end].to_string())
+}
+
+/// 两个目录是否指向同一位置（优先按规范化后的绝对路径比较）。
+#[cfg(target_os = "linux")]
+fn same_dir(a: &std::path::Path, b: &std::path::Path) -> bool {
+    match (fs::canonicalize(a), fs::canonicalize(b)) {
+        (Ok(x), Ok(y)) => x == y,
+        _ => a == b,
+    }
 }
 
 #[derive(Serialize)]

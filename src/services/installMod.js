@@ -1,6 +1,7 @@
 import { exists, remove } from '@tauri-apps/plugin-fs'
 import { invoke } from '@tauri-apps/api/core'
 import { getGamePath, getDb } from './dbHelper'
+import { joinPath, joinRel, trimTrailingSep } from './pathUtils'
 
 /**
  * 订阅下载（改造为后端执行）：创建后台任务并立即返回 taskId。
@@ -54,23 +55,23 @@ export async function uninstallMod({ modKey }) {
   }
 
   const { category, manifest } = rows[0]
-  const base = gamePath.replace(/\/+$/, '')
-  const pluginsDir = `${base}\\BepInEx\\plugins`
+  const base = trimTrailingSep(gamePath)
+  const pluginsDir = joinPath(base, 'BepInEx', 'plugins')
 
   if (category === 'dll') {
     // DLL: 按 manifest 逐个删除散落在 plugins 目录的文件
     const fileList = manifest ? JSON.parse(manifest) : []
     const dirsToCheck = new Set()
     for (const filePath of fileList) {
-      const fullPath = `${pluginsDir}\\${filePath}`
+      const fullPath = joinRel(pluginsDir, filePath)
       try {
         if (await exists(fullPath)) {
           await remove(fullPath)
         }
         // 收集父目录用于后续清理
-        const parts = filePath.split('/')
+        const parts = filePath.split(/[\\/]+/)
         if (parts.length > 1) {
-          dirsToCheck.add(`${pluginsDir}\\${parts.slice(0, -1).join('\\')}`)
+          dirsToCheck.add(joinRel(pluginsDir, parts.slice(0, -1).join('/')))
         }
       } catch (e) {
         console.warn(`[uninstallMod] 删除文件失败: ${fullPath}`, e)
@@ -91,16 +92,16 @@ export async function uninstallMod({ modKey }) {
     // v1: 按 manifest 中的相对路径逐个删除文件，并清理空目录
     const fileList = manifest ? JSON.parse(manifest) : []
     const dirsToCheck = new Set()
+    const customMissionsDir = joinPath(base, 'CustomMissions')
     for (const filePath of fileList) {
-      const normalizedPath = filePath.replace(/\//g, '\\')
-      const fullPath = `${base}\\CustomMissions\\${normalizedPath}`
+      const fullPath = joinRel(customMissionsDir, filePath)
       try {
         if (await exists(fullPath)) {
           await remove(fullPath)
         }
-        const parts = normalizedPath.split('\\')
+        const parts = filePath.split(/[\\/]+/)
         if (parts.length > 1) {
-          dirsToCheck.add(`${base}\\CustomMissions\\${parts.slice(0, -1).join('\\')}`)
+          dirsToCheck.add(joinRel(customMissionsDir, parts.slice(0, -1).join('/')))
         }
       } catch (e) {
         console.warn(`[uninstallMod] 删除文件失败: ${fullPath}`, e)
@@ -118,12 +119,12 @@ export async function uninstallMod({ modKey }) {
     }
     // 兼容旧逻辑：尝试删除以 modKey 命名的旧目录
     try {
-      const oldDir = `${base}\\CustomMissions\\${modKey}`
+      const oldDir = joinPath(customMissionsDir, modKey)
       if (await exists(oldDir)) {
         await remove(oldDir, { recursive: true })
       }
     } catch (e) {
-      console.warn(`[uninstallMod] 删除旧目录失败: ${base}\\CustomMissions\\${modKey}`, e)
+      console.warn(`[uninstallMod] 删除旧目录失败: ${joinPath(customMissionsDir, modKey)}`, e)
     }
   } else if (category === 'composite') {
     // composite：manifest 内是相对游戏根目录的全路径
@@ -131,15 +132,14 @@ export async function uninstallMod({ modKey }) {
     const fileList = manifest ? JSON.parse(manifest) : []
     const dirsToCheck = new Set()
     for (const filePath of fileList) {
-      const normalizedPath = filePath.replace(/\//g, '\\')
-      const fullPath = `${base}\\${normalizedPath}`
+      const fullPath = joinRel(base, filePath)
       try {
         if (await exists(fullPath)) {
           await remove(fullPath)
         }
-        const parts = normalizedPath.split('\\')
+        const parts = filePath.split(/[\\/]+/)
         if (parts.length > 1) {
-          dirsToCheck.add(`${base}\\${parts.slice(0, -1).join('\\')}`)
+          dirsToCheck.add(joinRel(base, parts.slice(0, -1).join('/')))
         }
       } catch (e) {
         console.warn(`[uninstallMod] 删除文件失败: ${fullPath}`, e)
@@ -157,16 +157,16 @@ export async function uninstallMod({ modKey }) {
     }
     // 兼容旧版（修复前多套一层 modKey 的残留）
     try {
-      const oldDir = `${pluginsDir}\\${modKey}`
+      const oldDir = joinPath(pluginsDir, modKey)
       if (await exists(oldDir)) {
         await remove(oldDir, { recursive: true })
       }
     } catch (e) {
-      console.warn(`[uninstallMod] 删除旧目录失败: ${pluginsDir}\\${modKey}`, e)
+      console.warn(`[uninstallMod] 删除旧目录失败: ${joinPath(pluginsDir, modKey)}`, e)
     }
   } else {
     // v2: 删除整个 modKey 目录
-    const targetDir = `${base}\\CustomMissions2\\${modKey}`
+    const targetDir = joinPath(base, 'CustomMissions2', modKey)
     try {
       if (await exists(targetDir)) {
         await remove(targetDir, { recursive: true })

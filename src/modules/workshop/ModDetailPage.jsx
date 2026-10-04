@@ -25,6 +25,7 @@ import { upsertLikedModToCache, removeLikedModFromCache } from '../../services/l
 import { upsertRatedModToCache } from '../../services/ratingCache'
 import CommentSection from './CommentSection'
 import { getDb, getGamePath } from '../../services/dbHelper'
+import { joinPath, toNativePath, trimTrailingSep } from '../../services/pathUtils'
 import { BackButton, FloatingActions, FileRow, UserLink } from '../../components'
 import { RatingStarsInteractiveDisplay } from '../../components/common/RatingStars'
 import { LANGUAGES, LANG_LABELS } from '../../i18n/languages'
@@ -307,13 +308,13 @@ export default function ModDetailPage({ mod, onBack, onEdit, scrollToCommentId }
           }
           const gamePath = await getGamePath()
           if (gamePath) {
-            const base = gamePath.replace(/\/+$/, '')
+            const base = trimTrailingSep(gamePath)
             const category = rows[0]?.category || 'v1'
             let targetDir
             if (category === 'v2') {
-              targetDir = `${base}\\CustomMissions2\\${mod.mod_key}`
+              targetDir = joinPath(base, 'CustomMissions2', mod.mod_key)
             } else if (category === 'dll') {
-              targetDir = `${base}\\BepInEx\\plugins`
+              targetDir = joinPath(base, 'BepInEx', 'plugins')
             } else if (category === 'composite') {
               // composite：解压到游戏根目录，zip 内顶层文件夹才是真正的 mod 目录
               // 从 manifest 第一项推断顶层目录（如 "BepInEx/plugins/CosplayShop"）
@@ -322,21 +323,21 @@ export default function ModDetailPage({ mod, onBack, onEdit, scrollToCommentId }
               const segments = firstPath.split('/')
               if (segments.length > 1) {
                 const topDirSegs = segments.slice(0, -1)
-                targetDir = `${base}\\${topDirSegs.join('\\')}`
+                targetDir = joinPath(base, ...topDirSegs)
                 // installedFiles（manifest 是相对游戏根的路径）需转换为相对收窄后
                 // targetDir 的路径，使 open_folder 的 path.join(item) 解析到真实文件
                 setInstalledFiles(fileList.map(f => {
                   const segs = f.split('/')
                   return segs.length > topDirSegs.length
-                    ? segs.slice(topDirSegs.length).join('\\')
-                    : f.replace(/\//g, '\\')
+                    ? toNativePath(segs.slice(topDirSegs.length).join('/'))
+                    : toNativePath(f)
                 }))
               } else {
                 // 第一项是根级文件（单段路径）：targetDir 保持游戏根，files 保持相对游戏根
                 targetDir = base
               }
             } else {
-              targetDir = `${base}\\CustomMissions`
+              targetDir = joinPath(base, 'CustomMissions')
             }
             setInstalledDir(targetDir)
           }
