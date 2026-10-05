@@ -67,7 +67,8 @@ jobs:
             libayatana-appindicator3-dev \
             librsvg2-dev \
             patchelf \
-            libfuse2
+            libfuse2 \
+            squashfs-tools
 
       - name: Install dependencies
         run: pnpm install
@@ -90,6 +91,31 @@ jobs:
         env:
           HTTPS_PROXY: ''
           HTTP_PROXY: ''
+
+      - name: Wrap AppRun for SteamOS (inject host Wayland/Epoxy)
+        # Tauri 使用预编译的 AppRun 二进制，无法通过配置替换；这里在打包后
+        # 解包 AppImage，把 AppRun 换成 scripts/steam-deck-env.sh（SteamOS 上
+        # 才注入宿主机 LD_PRELOAD），再用 appimagetool 重新打包。
+        shell: bash
+        run: |
+          set -euo pipefail
+          APPIMAGE=$(ls src-tauri/target/release/bundle/appimage/*.AppImage | head -n1)
+          echo "Patching: $APPIMAGE"
+          WORK=$(mktemp -d)
+          cp "$APPIMAGE" "$WORK/app.AppImage"
+          chmod +x "$WORK/app.AppImage"
+          ( cd "$WORK" && ./app.AppImage --appimage-extract >/dev/null )
+          mv "$WORK/squashfs-root/AppRun" "$WORK/squashfs-root/AppRun.bin"
+          cp scripts/steam-deck-env.sh "$WORK/squashfs-root/AppRun"
+          chmod +x "$WORK/squashfs-root/AppRun"
+          curl -fsSL -o "$WORK/appimagetool" \
+            "https://github.com/AppImage/appimagetool/releases/download/continuous/appimagetool-x86_64.AppImage"
+          chmod +x "$WORK/appimagetool"
+          ARCH=x86_64 APPIMAGE_EXTRACT_AND_RUN=1 "$WORK/appimagetool" \
+            --no-appstream "$WORK/squashfs-root" "$WORK/repacked.AppImage"
+          mv "$WORK/repacked.AppImage" "$APPIMAGE"
+          chmod +x "$APPIMAGE"
+          echo "Repacked: $APPIMAGE"
 
       - name: Upload AppImage as artifact
         uses: actions/upload-artifact@v7

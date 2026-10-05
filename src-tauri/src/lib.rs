@@ -489,8 +489,15 @@ fn open_folder(path: String, selected_items: Option<Vec<String>>) -> Result<(), 
         .map_err(|e| e.to_string())?;
 
     #[cfg(target_os = "linux")]
+    // AppImage 的 AppRun 会把 LD_LIBRARY_PATH（可能还有 LD_PRELOAD）指向挂载目录内
+    // 自带的库。子进程 xdg-open 若继承它，系统里的打开器（KDE 的 kde-open、GNOME 的
+    // gnome-open 等）会优先加载 AppImage 内较旧的 libssl.so.3 等，报
+    // "version `OPENSSL_3.x.0' not found" 而无法打开文件夹。打开器是系统程序，必须
+    // 使用系统库，故清除这两个环境变量（xdg-open 本身不依赖它们）。
     std::process::Command::new("xdg-open")
         .arg(open_path)
+        .env_remove("LD_LIBRARY_PATH")
+        .env_remove("LD_PRELOAD")
         .spawn()
         .map_err(|e| e.to_string())?;
 

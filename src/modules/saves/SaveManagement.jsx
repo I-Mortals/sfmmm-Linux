@@ -66,7 +66,20 @@ const useStyles = makeStyles({
     gap: '4px',
     minWidth: 0,
   },
+  nameWrap: {
+    display: 'flex',
+    flexDirection: 'column',
+    minWidth: 0,
+  },
   fileName: {
+    overflow: 'hidden',
+    textOverflow: 'ellipsis',
+    whiteSpace: 'nowrap',
+  },
+  filePath: {
+    display: 'block',
+    maxWidth: '420px',
+    color: tokens.colorNeutralForeground3,
     overflow: 'hidden',
     textOverflow: 'ellipsis',
     whiteSpace: 'nowrap',
@@ -289,18 +302,23 @@ export function SaveManagement() {
                           aria-label={t('saves.renamePlaceholder')}
                         />
                       ) : (
-                        <div className={styles.nameCell}>
-                          <Tooltip content={file.name} relationship="label">
-                            <Text size="small" className={styles.fileName}>{file.name}</Text>
+                        <div className={styles.nameWrap}>
+                          <div className={styles.nameCell}>
+                            <Tooltip content={file.name} relationship="label">
+                              <Text size="small" className={styles.fileName}>{file.name}</Text>
+                            </Tooltip>
+                            <Button
+                              size="small"
+                              appearance="subtle"
+                              icon={<Edit24Regular />}
+                              onClick={() => startRename(file.name)}
+                              disabled={isBusy}
+                              aria-label={t('saves.rename')}
+                            />
+                          </div>
+                          <Tooltip content={file.path} relationship="label">
+                            <Text size="100" className={styles.filePath}>{file.path}</Text>
                           </Tooltip>
-                          <Button
-                            size="small"
-                            appearance="subtle"
-                            icon={<Edit24Regular />}
-                            onClick={() => startRename(file.name)}
-                            disabled={isBusy}
-                            aria-label={t('saves.rename')}
-                          />
                         </div>
                       )}
                     </TableCell>

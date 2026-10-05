@@ -6,6 +6,44 @@ A Tauri 2 based game mod management desktop application with support for mod bro
 
 SFMMM ワークショップ Mod マネージャー - Tauri 2 ベースのゲーム Mod 管理デスクトップアプリケーションです。
 
+## Steam Deck / Linux Notes / 使用说明 / 注意
+
+### English
+
+> Read this first if you run the app on a Steam Deck (SteamOS).
+
+**Launching the AppImage.** On SteamOS the system Mesa/EGL stack may be incompatible with the `libwayland-client.so.0` / `libepoxy.so.0` bundled inside the AppImage. The AppImage now detects SteamOS on startup and preloads the host libraries automatically, so just run it directly — no wrapper script needed.
+
+**Loading BepInEx in-game (Proton compatibility + DLL override).** BepInEx relies on `winhttp.dll`, which Proton does not load by default; without the override below your mods will not take effect. First, in Steam right-click the game → **Properties** → **Compatibility**, tick *Force the use of a specific Steam Play compatibility tool*, and choose **Proton 8.0** or **Proton 9.0** (Experimental builds may ignore the override). Then open **Launch Options** and enter:
+
+```
+WINEDLLOVERRIDES="winhttp=n,b" %command%
+```
+
+### 中文
+
+> 在 Steam Deck（SteamOS）上运行本应用时，请先阅读本节。
+
+**启动 AppImage。** SteamOS 系统自带的 Mesa/EGL 环境可能与 AppImage 内置的 `libwayland-client.so.0` / `libepoxy.so.0` 不兼容。AppImage 现在会在启动时自动检测 SteamOS 并预加载宿主机库，直接运行即可，无需额外脚本。
+
+**让游戏加载 BepInEx（Proton 兼容层 + DLL 覆写）。** BepInEx 依赖 `winhttp.dll`，而 Proton 默认不会加载它；不做下面的覆写，Mod 不会生效。请先在 Steam 中右键游戏 → **属性** → **兼容性**，勾选「强制使用特定 Steam Play 兼容性工具」，并选择 **Proton 8.0** 或 **Proton 9.0**（实验版可能不识别该覆写）；然后切到 **启动选项**，填入：
+
+```
+WINEDLLOVERRIDES="winhttp=n,b" %command%
+```
+
+### 日本語
+
+> Steam Deck（SteamOS）で本アプリを使う場合は、まずこの節をお読みください。
+
+**AppImage の起動。** SteamOS 標準の Mesa/EGL 環境は、AppImage に同梱された `libwayland-client.so.0` / `libepoxy.so.0` と互換性がない場合があります。AppImage は起動時に SteamOS を検出し、ホスト側のライブラリを自動でプリロードするため、ラッパースクリプトは不要でそのまま実行できます。
+
+**BepInEx を読み込ませる（Proton 互換レイヤー + DLL オーバーライド）。** BepInEx は `winhttp.dll` に依存していますが、Proton は既定では読み込みません。以下の設定を行わないと Mod は反映されません。まず Steam でゲームを右クリック → **プロパティ** → **互換性** を開き、「特定の Steam Play 互換ツールを強制する」にチェックを入れ、**Proton 8.0** または **Proton 9.0** を選択します（実験版はこのオーバーライドを認識しない場合があります）。次に **起動オプション** に切り替え、以下を入力：
+
+```
+WINEDLLOVERRIDES="winhttp=n,b" %command%
+```
+
 ## Features / 功能特性 / 機能
 
 - **Mod Management** - Scan and manage local game mods
@@ -207,6 +245,3 @@ MIT
 
 
 ---
-
-高风险：zip 条目名 GBK 乱码
-db/subscribe.rs:198 / db/bepinex.rs:54(zip crate = "2"):ZIP 规范对无 UTF-8 标志的条目名默认按 CP437 解码(刚用 context7 核实过 zip2 的行为，且提供 name_raw() 正是为此场景)。中文作者用 WinRAR/7-Zip 旧版打的包是 GBK 文件名、通常不带 UTF-8 标志 → 订阅 mod 解压到游戏目录后文件名全部乱码，游戏加载不到、指纹比对也基于乱码名。影响面：订阅下载(subscribe.rs)、v1/v2 分发包(bepinex.rs);官方 BepInEx 包是 ASCII 名所以 bepinex 风险低。修法:name_raw() 拿原始字节，UTF-8 校验失败时用 encoding_rs 按 GBK 解码。
