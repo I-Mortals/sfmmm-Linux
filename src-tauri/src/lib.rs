@@ -1,7 +1,7 @@
 use std::{
     fs,
     io::{Read, Write},
-    path::PathBuf,
+    path::{Path, PathBuf},
     time::{SystemTime, UNIX_EPOCH},
 };
 
@@ -775,6 +775,148 @@ fn batch_toggle_mod_enabled(dir: String, ban: bool) -> Result<(usize, usize), St
             if is_banned == ban {
                 let new_path = dir.join(&new_name);
                 match fs::rename(&path, &new_path) {
+                    Ok(_) => success += 1,
+                    Err(_) => failed += 1,
+                }
+            }
+        }
+    }
+
+    Ok((success, failed))
+}
+
+// ==================== 本地模组「移入暂存」式禁用/启用 ====================
+// 与上面的 [ban] 就地改名不同：禁用时把【整个顶层条目】(文件或文件夹，不递归内部文件)
+// 移动到游戏根目录下的隐藏暂存目录 `.sfmmm_disabled/<类别>/`，启用时原样移回原位。
+// 这样文件夹类模组（v2 的 CustomMissions2/<mod_key>/）也能整体禁用，无需逐个改名内部文件。
+// 旧的 [ban] 改名文件仍被识别为「已禁用」，批量启用时会顺带还原为正常名。
+
+/// 暂存目录名（游戏根目录下，点开头故不会被当作模组列出）。
+const DISABLED_DIR_NAME: &str = ".sfmmm_disabled";
+
+/// 类别 → (活动目录相对游戏根, 暂存子目录名)。仅覆盖本地模组三页对应的类别。
+fn local_mod_paths(category: &str) -> Option<(&'static str, &'static str)> {
+    match category {
+        "dll" => Some(("BepInEx/plugins", "plugins")),
+        "v1" => Some(("CustomMissions", "v1")),
+        "v2" => Some(("CustomMissions2", "v2")),
+        _ => None,
+    }
+}
+
+/// 顶层条目名校验：非空、不是 . / ..、不含任何路径分隔符（禁用仅作用于顶层条目）。
+fn validate_entry_name(name: &str) -> Result<(), String> {
+    if name.is_empty() || name == "." || name == ".." {
+        return Err("非法的条目名称".into());
+    }
+    if name.contains('/') || name.contains('\\') {
+        return Err("仅支持顶层条目".into());
+    }
+    Ok(())
+}
+
+/// 由 游戏根 + 类别 + 条目名 计算 (活动路径, 暂存路径)。
+fn local_mod_paths_for(
+    game_path: &str,
+    category: &str,
+    name: &str,
+) -> Result<(PathBuf, PathBuf), String> {
+    validate_entry_name(name)?;
+    let (active_rel, stage_sub) =
+        local_mod_paths(category).ok_or_else(|| format!("不支持的模组类别: {}", category))?;
+    let root = PathBuf::from(game_path);
+    let active = root.join(active_rel).join(name);
+    let staging = root.join(DISABLED_DIR_NAME).join(stage_sub).join(name);
+    Ok((active, staging))
+}
+
+/// 移动文件或整个文件夹。目标已存在同名条目时拒绝（不覆盖）。暂存目录与活动目录同在
+/// 游戏根下（同一文件系统），故 fs::rename 足够；跨盘等异常直接报错而非静默复制。
+fn move_entry(src: &Path, dst: &Path) -> Result<(), String> {
+    if !src.exists() {
+        return Err("条目不存在".into());
+    }
+    if dst.exists() {
+        let name = dst
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        return Err(format!("目标已存在同名条目: {}", name));
+    }
+    if let Some(parent) = dst.parent() {
+        fs::create_dir_all(parent).map_err(|e| format!("创建目录失败: {}", e))?;
+    }
+    fs::rename(src, dst).map_err(|e| format!("移动失败: {}", e))
+}
+
+/// 禁用单个顶层条目：活动目录 → 暂存目录。
+#[tauri::command]
+fn disable_local_mod(game_path: String, category: String, name: String) -> Result<(), String> {
+    let (active, staging) = local_mod_paths_for(&game_path, &category, &name)?;
+    move_entry(&active, &staging)
+}
+
+/// 启用单个顶层条目：暂存目录 → 活动目录。
+#[tauri::command]
+fn enable_local_mod(game_path: String, category: String, name: String) -> Result<(), String> {
+    let (active, staging) = local_mod_paths_for(&game_path, &category, &name)?;
+    move_entry(&staging, &active)
+}
+
+/// 批量禁用/启用当前类别下的全部顶层条目，返回 (成功数, 失败数)。
+///   disabled=true  → 把活动目录下每个未禁用的顶层条目移入暂存（旧 [ban] 已禁用，跳过）
+///   disabled=false → 把暂存目录里的条目全部移回，并还原活动目录里的旧 [ban] 文件
+#[tauri::command]
+fn batch_set_local_mods_disabled(
+    game_path: String,
+    category: String,
+    disabled: bool,
+) -> Result<(usize, usize), String> {
+    let (active_rel, stage_sub) =
+        local_mod_paths(&category).ok_or_else(|| format!("不支持的模组类别: {}", category))?;
+    let root = PathBuf::from(&game_path);
+    let active_dir = root.join(active_rel);
+    let staging_dir = root.join(DISABLED_DIR_NAME).join(stage_sub);
+
+    let mut success = 0usize;
+    let mut failed = 0usize;
+
+    // 列出目录中的顶层条目名（跳过点开头的隐藏项；readme.txt 与前端列表一致地忽略）
+    let list_names = |dir: &Path| -> Vec<String> {
+        match fs::read_dir(dir) {
+            Ok(rd) => rd
+                .filter_map(|e| e.ok())
+                .filter_map(|e| e.file_name().into_string().ok())
+                .filter(|n| !n.starts_with('.'))
+                .filter(|n| !n.eq_ignore_ascii_case("readme.txt"))
+                .collect(),
+            Err(_) => Vec::new(),
+        }
+    };
+
+    if disabled {
+        for name in list_names(&active_dir) {
+            // 已处于禁用态（[ban] 改名的文件）跳过，避免重复处理
+            if matches!(toggle_target_name(&name), Some((_, true))) {
+                continue;
+            }
+            match move_entry(&active_dir.join(&name), &staging_dir.join(&name)) {
+                Ok(_) => success += 1,
+                Err(_) => failed += 1,
+            }
+        }
+    } else {
+        // 暂存条目先移回
+        for name in list_names(&staging_dir) {
+            match move_entry(&staging_dir.join(&name), &active_dir.join(&name)) {
+                Ok(_) => success += 1,
+                Err(_) => failed += 1,
+            }
+        }
+        // 再还原活动目录里的旧 [ban] 文件（toggle_target_name 返回 is_banned=false 即为禁用态）
+        for name in list_names(&active_dir) {
+            if let Some((new_name, false)) = toggle_target_name(&name) {
+                match fs::rename(active_dir.join(&name), active_dir.join(&new_name)) {
                     Ok(_) => success += 1,
                     Err(_) => failed += 1,
                 }
@@ -1710,7 +1852,7 @@ pub fn run() {
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_http::init())
         .invoke_handler(tauri::generate_handler![
-            open_folder, launch_game, scan_mods, check_game_version, toggle_mod_enabled, batch_toggle_mod_enabled, http_request, download_and_extract_7z,
+            open_folder, launch_game, scan_mods, check_game_version, toggle_mod_enabled, batch_toggle_mod_enabled, disable_local_mod, enable_local_mod, batch_set_local_mods_disabled, http_request, download_and_extract_7z,
             list_save_files, backup_save_file, restore_save_file, rename_save_file, get_save_dir,
             db::db_login, db::db_register, db::db_update_profile,
             db::db_list_mods, db::db_list_my_mods, db::db_list_liked_mods, db::db_list_rated_mods,

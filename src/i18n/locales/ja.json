@@ -122,6 +122,8 @@
     "openContainingFolder": "フォルダを開く",
     "folderConfig": "フォルダ設定",
     "disabled": "無効",
+    "enabled": "有効",
+    "toggleFailed": "操作に失敗しました：{{msg}}",
     "status": "合計 {{total}} 個、表示 {{shown}} 個",
     "dllMod": "DLL Mod",
     "file": "ファイル",

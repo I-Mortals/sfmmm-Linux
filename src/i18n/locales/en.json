@@ -122,6 +122,8 @@
     "openContainingFolder": "Open containing folder",
     "folderConfig": "Folder Config",
     "disabled": "Disabled",
+    "enabled": "Enabled",
+    "toggleFailed": "Operation failed: {{msg}}",
     "status": "{{total}} total, {{shown}} shown",
     "dllMod": "DLL mod",
     "file": "File",

@@ -122,6 +122,8 @@
     "openContainingFolder": "打开所在目录",
     "folderConfig": "文件夹配置",
     "disabled": "已禁用",
+    "enabled": "已启用",
+    "toggleFailed": "操作失败：{{msg}}",
     "status": "共 {{total}} 个，显示 {{shown}} 个",
     "dllMod": "DLL 模组",
     "file": "文件",

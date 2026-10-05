@@ -10,7 +10,7 @@ import { getModDetail } from '../../services/workshopApi'
 import { installMod } from '../../services/installMod'
 import { AsyncView, EmptyState, BepInExPrereqBanner, ItemsPerRowControl } from '../../components'
 import { getConfig, setConfig } from '../../services/dbHelper'
-import { joinPath, toNativePath } from '../../services/pathUtils'
+import { toNativePath } from '../../services/pathUtils'
 import { LANG_LABELS } from '../../i18n/languages'
 import { RatingStarsDisplay } from '../../components/common/RatingStars'
 
@@ -324,6 +324,11 @@ function categoryFromSubfolder(subfolder) {
   return 'composite'
 }
 
+// 禁用暂存：类别 → 游戏根 `.sfmmm_disabled/` 下的子目录名（与 Rust local_mod_paths 一致）。
+// 禁用时把整个顶层条目移入对应子目录，启用时移回；点开头故不会被 listFiles 当作模组列出。
+const STAGING_SUB_BY_CATEGORY = { dll: 'plugins', v1: 'v1', v2: 'v2' }
+const DISABLED_DIR_NAME = '.sfmmm_disabled'
+
 async function openInExplorer(dir, items) {
   try {
     // 归一化为当前平台原生分隔符（Windows 需反斜杠，Linux/macOS 用斜杠）
@@ -399,7 +404,7 @@ function ModCardActions({ modKey, hasUpdate, onViewDetail, onUpdate, onUninstall
   )
 }
 
-function FolderCard({ name, fullPath, onNavigate, isWorkshop, workshopDetail, cloudInfo, onUninstall, hasUpdate, modKey, onViewDetail, onUpdate, inGroup = false, selected = false, onSelect, onOpenLocation }) {
+function FolderCard({ name, fullPath, onNavigate, isWorkshop, workshopDetail, cloudInfo, onUninstall, hasUpdate, modKey, onViewDetail, onUpdate, inGroup = false, selected = false, onSelect, onOpenLocation, isDisabled = false, isStaged = false, onToggle }) {
   const { t } = useTranslation()
   const styles = useStyles()
   const [childInfo, setChildInfo] = useState(null)
@@ -420,7 +425,7 @@ function FolderCard({ name, fullPath, onNavigate, isWorkshop, workshopDetail, cl
       className={inGroup ? styles.innerCard : styles.card}
       id={`mission-item-${encodeURIComponent(fullPath)}`}
       onClick={(e) => { onSelect?.(fullPath, e) }}
-      onDoubleClick={(e) => { if (!e.ctrlKey && !e.shiftKey) onNavigate(fullPath) }}
+      onDoubleClick={(e) => { if (!isStaged && !e.ctrlKey && !e.shiftKey) onNavigate(fullPath) }}
       style={{
         border: selected ? `2px solid ${tokens.colorBrandStroke1}` : undefined,
         boxShadow: selected ? `0 0 0 2px ${tokens.colorBrandBackground2}, ${tokens.shadow4}` : undefined,
@@ -450,6 +455,9 @@ function FolderCard({ name, fullPath, onNavigate, isWorkshop, workshopDetail, cl
       )}
       <div className={styles.buttonRow}>
         <div style={{ display: 'flex', alignItems: 'center', gap: '4px', flexWrap: 'wrap', marginRight: 'auto' }}>
+          {isDisabled
+            ? <Badge appearance="filled" color="danger" size="small">{t('mods.disabled')}</Badge>
+            : <Badge appearance="outline" color="success" size="small">{t('mods.enabled')}</Badge>}
           {showWorkshopInfo && <Badge appearance="filled" color="success" size="small">{t('mods.workshopBadge')}</Badge>}
           {showWorkshopInfo && workshopDetail?.version && <Badge appearance="outline" size="small">v{workshopDetail.version}</Badge>}
           {showWorkshopInfo && workshopDetail?.langCode && <Badge appearance="outline" size="small">{LANG_LABELS[workshopDetail.langCode] || workshopDetail.langCode}</Badge>}
@@ -463,6 +471,11 @@ function FolderCard({ name, fullPath, onNavigate, isWorkshop, workshopDetail, cl
         <Tooltip content={t('mods.openContainingFolder')} relationship="label">
           <Button size="small" icon={<FolderOpen24Regular />} appearance="subtle" onClick={(e) => { e.stopPropagation(); onOpenLocation?.(fullPath) }} />
         </Tooltip>
+        {onToggle && (
+          <Tooltip content={isDisabled ? t('mods.enable') : t('mods.disable')} relationship="label">
+            <Button size="small" icon={isDisabled ? <Play24Regular /> : <Pause24Regular />} appearance="subtle" onClick={(e) => { e.stopPropagation(); onToggle() }} />
+          </Tooltip>
+        )}
         {showWorkshopInfo && (
           <ModCardActions modKey={modKey} hasUpdate={hasUpdate} onViewDetail={onViewDetail} onUpdate={onUpdate} onUninstall={onUninstall} pushRight={false} />
         )}
@@ -471,7 +484,7 @@ function FolderCard({ name, fullPath, onNavigate, isWorkshop, workshopDetail, cl
   )
 }
 
-function FileCard({ name, fullPath, isBanned, onToggle, isWorkshop, hasUpdate, workshopDetail, cloudInfo, onUninstall, modKey, onViewDetail, onUpdate, inGroup = false, selected = false, onSelect, onOpenLocation }) {
+function FileCard({ name, fullPath, isDisabled, onToggle, isWorkshop, hasUpdate, workshopDetail, cloudInfo, onUninstall, modKey, onViewDetail, onUpdate, inGroup = false, selected = false, onSelect, onOpenLocation }) {
   const { t } = useTranslation()
   const styles = useStyles()
   const ext = getExt(name)
@@ -505,7 +518,9 @@ function FileCard({ name, fullPath, isBanned, onToggle, isWorkshop, hasUpdate, w
       <div className={styles.buttonRow}>
         <div style={{ display: 'flex', alignItems: 'center', gap: '4px', flexWrap: 'wrap', marginRight: 'auto' }}>
           <Badge appearance="outline" size="small">{ext.toUpperCase()}</Badge>
-          {isBanned && <Badge appearance="filled" color="danger" size="small">{t('mods.disabled')}</Badge>}
+          {isDisabled
+            ? <Badge appearance="filled" color="danger" size="small">{t('mods.disabled')}</Badge>
+            : <Badge appearance="outline" color="success" size="small">{t('mods.enabled')}</Badge>}
           {showWorkshopInfo && <Badge appearance="filled" color="success" size="small">{t('mods.workshopBadge')}</Badge>}
           {showWorkshopInfo && workshopDetail?.version && <Badge appearance="outline" size="small">v{workshopDetail.version}</Badge>}
           {showWorkshopInfo && workshopDetail?.langCode && <Badge appearance="outline" size="small">{LANG_LABELS[workshopDetail.langCode] || workshopDetail.langCode}</Badge>}
@@ -520,12 +535,12 @@ function FileCard({ name, fullPath, isBanned, onToggle, isWorkshop, hasUpdate, w
         <Tooltip content={t('mods.openContainingFolder')} relationship="label">
           <Button size="small" icon={<FolderOpen24Regular />} appearance="subtle" onClick={(e) => { e.stopPropagation(); onOpenLocation?.(fullPath) }} />
         </Tooltip>
-        <Tooltip content={isBanned ? t('mods.enable') : t('mods.disable')} relationship="label">
+        <Tooltip content={isDisabled ? t('mods.enable') : t('mods.disable')} relationship="label">
           <Button
             size="small"
-            icon={isBanned ? <Play24Regular /> : <Pause24Regular />}
+            icon={isDisabled ? <Play24Regular /> : <Pause24Regular />}
             appearance="subtle"
-            onClick={(e) => { e.stopPropagation(); onToggle(fullPath) }}
+            onClick={(e) => { e.stopPropagation(); onToggle() }}
           />
         </Tooltip>
         {showWorkshopInfo && (
@@ -591,6 +606,11 @@ export function MissionFolder({ config, subfolder, onUninstall, focusModKey }) {
   const { t } = useTranslation()
   const gamePath = config?.game_path?.replace(/\\/g, '/') || ''
   const rootDir = gamePath ? `${gamePath}/${subfolder}` : ''
+  // 当前目录的模组类别（dll/v1/v2）及其禁用暂存目录。禁用=把顶层条目整体移入
+  // <game_root>/.sfmmm_disabled/<子目录>/，启用=移回；仅顶层展示暂存条目。
+  const category = categoryFromSubfolder(subfolder)
+  const stagingSub = STAGING_SUB_BY_CATEGORY[category] || null
+  const stagingDir = gamePath && stagingSub ? `${gamePath}/${DISABLED_DIR_NAME}/${stagingSub}` : ''
   const [currentDir, setCurrentDir] = useState(rootDir)
   const [files, setFiles] = useState([])
   const [loading, setLoading] = useState(true)
@@ -600,7 +620,13 @@ export function MissionFolder({ config, subfolder, onUninstall, focusModKey }) {
   // 每行展示数量：与创意工坊共用 workshop_items_per_row 配置键（1-10 持久化），复用同一「每行 X 个」控件
   const [itemsPerRow, setItemsPerRow] = useState(3)
   const anchorRef = useRef(null) // Shift 范围选择的锚点
-  const orderedPaths = files.map(f => `${currentDir}/${f.name}`)
+  const isTopLevel = currentDir === rootDir
+  // 条目的完整路径：暂存条目在 stagingDir，活动条目在 currentDir
+  const entryFullPath = useCallback(
+    (f) => `${f?.isStaged ? stagingDir : currentDir}/${f?.name}`,
+    [stagingDir, currentDir]
+  )
+  const orderedPaths = files.map(f => entryFullPath(f))
 
   // Windows 风格选择：plain=单选；Ctrl=切换；Shift=以锚点起算的范围；Ctrl+Shift=范围并入
   const handleItemSelect = (fullPath, e) => {
@@ -640,8 +666,10 @@ export function MissionFolder({ config, subfolder, onUninstall, focusModKey }) {
   const handleOpenLocation = useCallback((fullPath) => {
     const isMultiSelect = selectedPaths.size > 1 && selectedPaths.has(fullPath)
     if (isMultiSelect) {
+      // 按被点条目所在目录分组高亮（活动目录 / 暂存目录各成一个基准目录）
+      const base = stagingDir && fullPath.startsWith(stagingDir) ? stagingDir : currentDir
       let selectedNames = files
-        .filter(f => selectedPaths.has(`${currentDir}/${f.name}`))
+        .filter(f => selectedPaths.has(entryFullPath(f)) && entryFullPath(f).startsWith(`${base}/`))
         .map(f => f.name)
       if (selectedNames.length === 0) {
         // 兜底：过滤未命中（如 files 快照过期）时至少高亮被点击项本身，
@@ -649,7 +677,7 @@ export function MissionFolder({ config, subfolder, onUninstall, focusModKey }) {
         selectedNames = [fullPath.split(/[/\\]/).pop()]
       }
       // 多选：打开父目录并高亮全部选中项（文件夹+文件），与 UI 选择保持一致
-      openInExplorer(currentDir, selectedNames)
+      openInExplorer(base, selectedNames)
     } else {
       // 单点：交给你 Rust 裁决（目录钻入 / 文件开父目录+高亮）
       openInExplorer(fullPath, [])
@@ -659,7 +687,7 @@ export function MissionFolder({ config, subfolder, onUninstall, focusModKey }) {
       next.add(fullPath)
       return next
     })
-  }, [files, currentDir, selectedPaths])
+  }, [files, currentDir, selectedPaths, entryFullPath, stagingDir])
 
   // 切换目录时清空选择，确保多选仅在本页/本目录内生效
   useEffect(() => {
@@ -729,12 +757,18 @@ export function MissionFolder({ config, subfolder, onUninstall, focusModKey }) {
   const loadFiles = useCallback(async () => {
     if (!currentDir) return
     try {
-      const list = await listFiles(currentDir)
-      setFiles(list)
+      const active = await listFiles(currentDir)
+      const merged = active.map(f => ({ ...f, isStaged: false }))
+      // 仅顶层合并暂存目录中的已禁用条目：让卡片能显示「已禁用」状态并提供启用按钮
+      if (currentDir === rootDir && stagingDir) {
+        const staged = await listFiles(stagingDir)
+        merged.push(...staged.map(f => ({ ...f, isStaged: true })))
+      }
+      setFiles(merged)
     } finally {
       setLoading(false)
     }
-  }, [currentDir])
+  }, [currentDir, rootDir, stagingDir])
 
   useEffect(() => {
     if (currentDir) {
@@ -754,7 +788,7 @@ export function MissionFolder({ config, subfolder, onUninstall, focusModKey }) {
       return k === focusModKey || getWorkshopKey(f.name) === focusModKey
     })
     if (!target) return
-    const fullPath = `${currentDir}/${target.name}`
+    const fullPath = entryFullPath(target)
     // 单选语义：清空后加入选中集，锚点同步（与 handleItemSelect 行为一致）
     // eslint-disable-next-line react-hooks/set-state-in-effect
     setSelectedPaths(new Set([fullPath]))
@@ -773,7 +807,7 @@ export function MissionFolder({ config, subfolder, onUninstall, focusModKey }) {
     }
     tryScroll()
     return () => { if (focusTimerRef.current) clearTimeout(focusTimerRef.current) }
-  }, [focusModKey, loading, files, currentDir, resolveModKey])
+  }, [focusModKey, loading, files, currentDir, resolveModKey, entryFullPath])
 
   // BepInEx 前置安装完成后：清空目录缓存并刷新文件列表
   const onPrereqInstalled = useCallback(() => {
@@ -850,38 +884,44 @@ export function MissionFolder({ config, subfolder, onUninstall, focusModKey }) {
     }
   }, [modDetails, subfolder, t, refresh])
 
-  const toggleItemEnabled = useCallback(async (filePath) => {
+  // 禁用/启用单个条目（不刷新，供单条目与组级批量复用）：
+  //   - 活动目录的普通条目   → 整体移入暂存（disable_local_mod）
+  //   - 暂存目录的条目       → 移回原位（enable_local_mod）
+  //   - 活动目录的旧 [ban] 文件 → 改名还原（toggle_mod_enabled，兼容历史数据）
+  const applyEntryEnabled = useCallback(async (f, enabled) => {
+    if (enabled && f.isStaged) {
+      await invoke('enable_local_mod', { gamePath: toNativePath(gamePath), category, name: f.name })
+    } else if (enabled && f.isBanned) {
+      await invoke('toggle_mod_enabled', { path: toNativePath(entryFullPath(f)) })
+    } else if (!enabled) {
+      await invoke('disable_local_mod', { gamePath: toNativePath(gamePath), category, name: f.name })
+    }
+  }, [gamePath, category, entryFullPath])
+
+  const toggleEntry = useCallback(async (f) => {
     try {
-      const [newIsBanned, newPath] = await invoke('toggle_mod_enabled', { path: toNativePath(filePath) })
-      // 更新文件列表中的状态
-      setFiles(prev => prev.map(f => {
-        const fullPath = `${currentDir}/${f.name}`
-        if (filePath === fullPath) {
-          // 重命名后文件名变了，从新路径中提取文件名
-          const newName = newPath.split(/[/\\]/).pop()
-          return { ...f, name: newName, isBanned: newIsBanned }
-        }
-        return f
-      }))
+      await applyEntryEnabled(f, !(f.isStaged || f.isBanned))
+      await loadFiles()
     } catch (e) {
       console.error('Failed to toggle item:', e)
+      alert(t('mods.toggleFailed', { msg: e?.message || String(e) }))
     }
-  }, [currentDir, setFiles])
+  }, [applyEntryEnabled, loadFiles, t])
 
   const handleBatchToggle = useCallback(async (ban) => {
     if (!currentDir) return
     setLoading(true)
     try {
-      await invoke('batch_toggle_mod_enabled', { dir: toNativePath(currentDir), ban })
+      await invoke('batch_set_local_mods_disabled', { gamePath: toNativePath(gamePath), category, disabled: ban })
       await loadFiles()
     } catch (e) {
       console.error('Failed to batch toggle:', e)
     } finally {
       setLoading(false)
     }
-  }, [currentDir, loadFiles, setLoading])
+  }, [currentDir, gamePath, category, loadFiles])
 
-  // 按 mod_key 把当前目录文件索引成 Map（O(1) 取组），供组级「暂停/继续」共用，
+  // 按 mod_key 把当前（含暂存）条目索引成 Map（O(1) 取组），供组级「暂停/继续」共用，
   // 避免每次操作都对 files 全表扫描一遍（filesByKey 依赖 resolveModKey，已用 useCallback 稳定化）
   const filesByKey = useMemo(() => {
     const map = new Map()
@@ -895,35 +935,19 @@ export function MissionFolder({ config, subfolder, onUninstall, focusModKey }) {
   }, [files, resolveModKey])
 
   // 组级「暂停/继续」共用逻辑：
-  //   ban=true  → 只把组内【未禁用】的文件禁用（已禁用的跳过）
-  //   ban=false → 只把组内【已禁用】的文件恢复（未禁用的跳过）
-  // 因此两个按钮始终同时显示，即使组内混有用户手动暂停的文件也各自幂等、不会误操作。
-  // 与 toggleItemEnabled 相同，只就地更新 files 状态而不重新扫描目录，
-  // 配合 getWorkshopKey 对 [ban] 标记的归一化，改名后文件仍留在所属分组容器内。
+  //   ban=true  → 只把组内【活动且未禁用】的条目整体移入暂存（已禁用的跳过）
+  //   ban=false → 只把组内【已禁用】的条目恢复（暂存条目移回 / 旧 [ban] 文件改名还原）
+  // 因此两个按钮始终同时显示，各自幂等、不会误操作；操作后统一重扫目录。
   const handleGroupToggleAll = useCallback(async (modKey, ban) => {
-    if (!currentDir) return
     const targets = (filesByKey.get(modKey) || [])
-      .filter(f => !f.isDir && (ban ? !f.isBanned : f.isBanned))
+      .filter(f => ban ? (!f.isStaged && !f.isBanned) : (f.isStaged || f.isBanned))
     if (targets.length === 0) return
-    const results = await Promise.allSettled(
-      targets.map(f => invoke('toggle_mod_enabled', { path: joinPath(currentDir, f.name) }))
-    )
-    const renamed = new Map() // 旧完整路径 -> 新文件名
-    results.forEach((r, i) => {
-      if (r.status === 'fulfilled') {
-        const newPath = r.value[1]
-        renamed.set(`${currentDir}/${targets[i].name}`, newPath.split(/[/\\]/).pop())
-      } else {
-        console.error(`Failed to ${ban ? 'disable' : 'enable'} group member:`, r.reason)
-      }
+    const results = await Promise.allSettled(targets.map(f => applyEntryEnabled(f, !ban)))
+    results.forEach(r => {
+      if (r.status === 'rejected') console.error(`Failed to ${ban ? 'disable' : 'enable'} group member:`, r.reason)
     })
-    if (renamed.size === 0) return
-    setFiles(prev => prev.map(f => {
-      const fullPath = `${currentDir}/${f.name}`
-      const newName = renamed.get(fullPath)
-      return newName ? { ...f, name: newName, isBanned: ban } : f
-    }))
-  }, [currentDir, filesByKey, setFiles])
+    await loadFiles()
+  }, [filesByKey, applyEntryEnabled, loadFiles])
 
   const handleGroupDisableAll = useCallback((modKey) => handleGroupToggleAll(modKey, true), [handleGroupToggleAll])
   const handleGroupEnableAll = useCallback((modKey) => handleGroupToggleAll(modKey, false), [handleGroupToggleAll])
@@ -1020,13 +1044,16 @@ export function MissionFolder({ config, subfolder, onUninstall, focusModKey }) {
         const renderedGroups = new Set()
 
         const renderItem = (f, i, inGroup) => {
-          const fullPath = `${currentDir}/${f.name}`
+          const fullPath = entryFullPath(f)
           const detail = getWorkshopDetail(f.name)
           const ci = getCloudInfo(f.name)
           const mk = resolveModKey(f.name)
+          const isDisabled = f.isStaged || f.isBanned
+          // 禁用/启用仅作用于顶层条目（暂存按类别固定分区），子目录内不显示切换按钮
+          const onToggle = isTopLevel ? () => toggleEntry(f) : undefined
           return f.isDir
-            ? <FolderCard key={i} name={f.name} fullPath={fullPath} onNavigate={navigateTo} isWorkshop={isWorkshopMod(f.name)} workshopDetail={detail} cloudInfo={ci} onUninstall={onUninstall} hasUpdate={hasUpdate(f.name)} modKey={mk} onViewDetail={handleViewDetail} onUpdate={handleUpdate} inGroup={inGroup} selected={selectedPaths.has(fullPath)} onSelect={handleItemSelect} onOpenLocation={handleOpenLocation} />
-            : <FileCard key={i} name={f.name} fullPath={fullPath} isBanned={f.isBanned} onToggle={toggleItemEnabled} isWorkshop={isWorkshopMod(f.name)} hasUpdate={hasUpdate(f.name)} workshopDetail={detail} cloudInfo={ci} onUninstall={onUninstall} modKey={mk} onViewDetail={handleViewDetail} onUpdate={handleUpdate} inGroup={inGroup} selected={selectedPaths.has(fullPath)} onSelect={handleItemSelect} onOpenLocation={handleOpenLocation} />
+            ? <FolderCard key={i} name={f.name} fullPath={fullPath} onNavigate={navigateTo} isWorkshop={isWorkshopMod(f.name)} workshopDetail={detail} cloudInfo={ci} onUninstall={onUninstall} hasUpdate={hasUpdate(f.name)} modKey={mk} onViewDetail={handleViewDetail} onUpdate={handleUpdate} inGroup={inGroup} selected={selectedPaths.has(fullPath)} onSelect={handleItemSelect} onOpenLocation={handleOpenLocation} isDisabled={isDisabled} isStaged={!!f.isStaged} onToggle={onToggle} />
+            : <FileCard key={i} name={f.name} fullPath={fullPath} isDisabled={isDisabled} onToggle={onToggle} isWorkshop={isWorkshopMod(f.name)} hasUpdate={hasUpdate(f.name)} workshopDetail={detail} cloudInfo={ci} onUninstall={onUninstall} modKey={mk} onViewDetail={handleViewDetail} onUpdate={handleUpdate} inGroup={inGroup} selected={selectedPaths.has(fullPath)} onSelect={handleItemSelect} onOpenLocation={handleOpenLocation} />
         }
 
         return (
