@@ -252,6 +252,13 @@
     "currentVersion": "Current version: v{{version}}. Click \"Check update\" to check for the latest version from the server.",
     "language": "Interface Language",
     "languageDesc": "Select the display language (restart required to take full effect)",
+    "proxyTitle": "Network Proxy",
+    "proxyEnable": "Enable proxy",
+    "proxyUrl": "Proxy URL",
+    "proxyUrlPlaceholder": "http://127.0.0.1:7890",
+    "proxySave": "Save",
+    "proxySaved": "Saved",
+    "proxyDesc": "When enabled, the app's network requests (downloads, image bed, updates, etc.) go through this proxy; when disabled it connects directly. HTTP/HTTPS proxies only.",
     "aboutTitle": "About",
     "aboutDesc": "Feel free to submit issues and feedback to help us improve this tool.",
     "openGitHub": "Open GitHub Repository"

@@ -44,7 +44,9 @@ pub async fn db_delete_imgbed_file(file_url: String) -> Result<ApiResponse, Stri
         .join(&format!("api/manage/delete/{}", path))
         .map_err(|e| e.to_string())?;
 
-    let client = reqwest::Client::new();
+    let client = crate::db::proxy::apply(reqwest::Client::builder())
+        .build()
+        .map_err(|e| format!("创建 HTTP 客户端失败: {e}"))?;
     let res = client
         .get(delete_url)
         .header("Authorization", format!("Bearer {}", token))

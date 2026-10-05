@@ -501,7 +501,7 @@ async fn run_subscribe_task(
     });
 
     // 3) 流式下载到临时文件
-    let client = match reqwest::Client::builder()
+    let client = match crate::db::proxy::apply(reqwest::Client::builder())
         .timeout(std::time::Duration::from_secs(300))
         .build()
     {

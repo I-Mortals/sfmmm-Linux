@@ -96,7 +96,7 @@ fn apply_browser_headers(
 /// （30x / meta 刷新需手动逐层处理，以便在文件流响应处停下取最终直链）
 fn build_lanzou_client() -> Result<reqwest::Client, String> {
     apply_browser_headers(
-        reqwest::Client::builder()
+        crate::db::proxy::apply(reqwest::Client::builder())
             .timeout(std::time::Duration::from_secs(30))
             .user_agent(MOBILE_UA)
             .redirect(reqwest::redirect::Policy::none()),
@@ -111,7 +111,7 @@ fn build_lanzou_client() -> Result<reqwest::Client, String> {
 /// 不设总超时（下载耗时不设上限，取消由 CancelFlag 负责），仅保留 30s 连接超时防挂死。
 pub fn build_lanzou_download_client(cookie: Option<&str>) -> Result<reqwest::Client, String> {
     apply_browser_headers(
-        reqwest::Client::builder()
+        crate::db::proxy::apply(reqwest::Client::builder())
             .connect_timeout(std::time::Duration::from_secs(30))
             .user_agent(MOBILE_UA),
         cookie,

@@ -252,6 +252,13 @@
     "currentVersion": "現在のバージョン：v{{version}}。「更新を確認」をクリックしてサーバーから最新バージョンを取得します。",
     "language": "表示言語",
     "languageDesc": "アプリケーションの表示言語を選択します（再起動後に完全に反映されます）",
+    "proxyTitle": "ネットワークプロキシ",
+    "proxyEnable": "プロキシを有効化",
+    "proxyUrl": "プロキシアドレス",
+    "proxyUrlPlaceholder": "http://127.0.0.1:7890",
+    "proxySave": "保存",
+    "proxySaved": "保存しました",
+    "proxyDesc": "有効にすると、アプリの通信（ダウンロード・画像アップロード・更新など）はこのプロキシを経由します。無効時は直接接続します。HTTP/HTTPS プロキシのみ対応。",
     "aboutTitle": "について",
     "aboutDesc": "Issue やフィードバックをお送りいただき、このツールの改善にご協力ください。",
     "openGitHub": "GitHub リポジトリを開く"

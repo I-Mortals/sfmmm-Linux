@@ -170,7 +170,7 @@ fn cancel_flags() -> &'static Mutex<HashMap<i64, CancelFlag>> {
 /// 前置下载专用 HTTP client：不设总超时（下载耗时不设上限，取消由 CancelFlag 负责），
 /// 仅保留 30s 连接超时防止目标不可达时挂死。引擎自身有子块重试与完整性校验。
 fn build_download_client() -> Result<reqwest::Client, String> {
-    reqwest::Client::builder()
+    crate::db::proxy::apply(reqwest::Client::builder())
         .connect_timeout(std::time::Duration::from_secs(30))
         .user_agent(concat!(
             "sfmmm/",

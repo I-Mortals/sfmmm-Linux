@@ -5,16 +5,16 @@
 // 拉取最新发布（无需 Token，公开仓库匿名可读），从 assets 中挑选
 // NSIS 安装包（*.exe），返回版本号与 browser_download_url 直链。
 //
-// 代理：完全交给 reqwest 默认行为（system-proxy 特性默认启用，自动检测
-// Windows 系统代理与环境变量），无需额外处理——用户开启系统代理即生效。
+// 代理：统一走 db::proxy::apply 注入的应用内代理设置（见 db/proxy.rs）——
+// 用户在设置页开启代理时全部请求经该代理，关闭时强制直连。
 use crate::db::ApiResponse;
 
 /// 构建 HTTP 客户端（安装包下载与 API 查询共用同一策略）。
 /// UA 使用官方推荐格式 AppName/version (contact)：GitHub API 强制要求有效 UA，
 /// 真实标识比伪装浏览器更规范，且不影响匿名限流配额（60次/小时/IP）。
-/// 代理遵循 reqwest 默认系统代理检测，不做额外干预。
+/// 代理按应用内设置注入（见 db::proxy::apply）。
 pub(crate) fn build_client(timeout_secs: u64) -> Result<reqwest::Client, String> {
-    reqwest::Client::builder()
+    crate::db::proxy::apply(reqwest::Client::builder())
         .timeout(std::time::Duration::from_secs(timeout_secs))
         .user_agent(concat!(
             "sfmmm/",

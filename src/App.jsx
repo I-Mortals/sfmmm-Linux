@@ -283,7 +283,7 @@ function App() {
 
     const initialize = async () => {
       try {
-        const configMap = await getConfigs(['language', 'selected_tab', 'initialized', 'game_path', 'theme_mode', GUIDE_SEEN_KEY])
+        const configMap = await getConfigs(['language', 'selected_tab', 'initialized', 'game_path', 'theme_mode', 'proxy_enabled', 'proxy_url', GUIDE_SEEN_KEY])
 
         if (!isMounted) {
           return

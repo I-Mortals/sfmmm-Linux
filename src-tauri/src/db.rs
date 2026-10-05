@@ -15,6 +15,7 @@ pub mod lanzou;
 pub mod gh;
 pub mod crypto;
 pub mod download;
+pub mod proxy;
 
 mod user;
 mod mod_ops;

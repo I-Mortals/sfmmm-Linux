@@ -620,7 +620,7 @@ async fn download_and_extract_7z(
         stage: "downloading".into(),
     });
 
-    let client = reqwest::Client::builder()
+    let client = db::proxy::apply(reqwest::Client::builder())
         .timeout(std::time::Duration::from_secs(300))
         .build()
         .map_err(|e| e.to_string())?;
@@ -789,7 +789,7 @@ fn batch_toggle_mod_enabled(dir: String, ban: bool) -> Result<(usize, usize), St
 async fn http_request(url: String, method: String, body: Option<String>) -> Result<String, String> {
     println!("[Rust] HTTP Request: {} {}", method, url);
     
-    let client = reqwest::Client::builder()
+    let client = db::proxy::apply(reqwest::Client::builder())
         .timeout(std::time::Duration::from_secs(30))
         .build()
         .map_err(|e| format!("创建客户端失败: {}", e))?;
@@ -1721,6 +1721,7 @@ pub fn run() {
             db::db_delete_mod_file,
             db::db_get_imgbed_config,
             db::db_delete_imgbed_file,
+            db::proxy::db_set_proxy,
             db::db_get_version,
             db::db_add_comment, db::db_get_comments, db::db_get_replies, db::db_edit_comment, db::db_delete_comment,
             db::db_locate_mod_comment,
@@ -1783,6 +1784,10 @@ pub fn run() {
 
             // 启动 MySQL 连接池空闲检查器：超过 60 秒无请求则释放连接
             app.state::<db::DbState>().pool.start_idle_checker();
+
+            // 加载应用内代理设置（SQLite config：proxy_enabled / proxy_url）：
+            // 必须在任何 reqwest 请求发起前完成，使全部 Rust 网络流量按用户设置走代理
+            db::proxy::init_from_config(app.handle());
 
             // 窗口几何恢复（窗口在 tauri.conf.json 中 visible:false）：
             // 此处先同步应用上次尺寸/位置，WebView 首帧渲染完成后由前端调用 show()，

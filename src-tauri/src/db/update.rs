@@ -70,7 +70,7 @@ pub async fn db_check_updates(
 /// 通过 Rust reqwest 拉取版本清单（绕过 WebView 对图床文件 30 天强缓存的缓存）
 #[tauri::command(rename_all = "snake_case")]
 pub async fn db_fetch_latest(url: String) -> Result<ApiResponse, String> {
-    let client = reqwest::Client::builder()
+    let client = crate::db::proxy::apply(reqwest::Client::builder())
         .timeout(std::time::Duration::from_secs(30))
         .build()
         .map_err(|e| format!("创建客户端失败: {}", e))?;

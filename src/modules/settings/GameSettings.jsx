@@ -10,6 +10,7 @@ import {
   Spinner,
   Select,
   ProgressBar,
+  Switch,
 } from '@fluentui/react-components'
 import {
   Folder24Regular,
@@ -80,6 +81,12 @@ export function GameSettings({ config, onConfigChange, appUpdateInfo }) {
   const styles = useStyles()
   const [gamePath, setGamePath] = useState(config?.game_path || '')
   const [language, setLanguage] = useState(config?.language || i18nInstance.language || 'zh')
+  // 网络代理：开关 + 地址，保存时经 Rust 命令 db_set_proxy 持久化并即时生效
+  const [proxyEnabled, setProxyEnabled] = useState(config?.proxy_enabled === 'true')
+  const [proxyUrl, setProxyUrl] = useState(config?.proxy_url || '')
+  const [savingProxy, setSavingProxy] = useState(false)
+  const [proxyError, setProxyError] = useState('')
+  const [proxySaved, setProxySaved] = useState(false)
   const [checking, setChecking] = useState(false)
   const [downloading, setDownloading] = useState(false)
   const [downloadProgress, setDownloadProgress] = useState(0)
@@ -124,6 +131,26 @@ export function GameSettings({ config, onConfigChange, appUpdateInfo }) {
       onConfigChange?.(updates)
     } catch (e) {
       console.error('Failed to save config:', e)
+    }
+  }
+
+  // 保存代理设置：db_set_proxy 负责校验、写 SQLite 并更新 Rust 运行期代理；
+  // 随后同步 React 侧 config 状态（不重复写库）。失败时展示后端返回的校验信息。
+  const handleSaveProxy = async () => {
+    setSavingProxy(true)
+    setProxyError('')
+    setProxySaved(false)
+    try {
+      await invoke('db_set_proxy', { enabled: proxyEnabled, url: proxyUrl })
+      onConfigChange?.({
+        proxy_enabled: proxyEnabled ? 'true' : 'false',
+        proxy_url: proxyUrl,
+      })
+      setProxySaved(true)
+    } catch (e) {
+      setProxyError(String(e))
+    } finally {
+      setSavingProxy(false)
     }
   }
 
@@ -422,6 +449,49 @@ export function GameSettings({ config, onConfigChange, appUpdateInfo }) {
           </div>
           <Text size="small" style={{ color: tokens.colorNeutralForeground3 }}>
             {t('settings.languageDesc')}
+          </Text>
+        </div>
+      </Card>
+
+      <Card appearance="outline">
+        <CardHeader header={<Title2>{t('settings.proxyTitle')}</Title2>} />
+        <div style={{ padding: '8px', display: 'flex', flexDirection: 'column', gap: '8px' }}>
+          <Switch
+            checked={proxyEnabled}
+            onChange={(_, data) => {
+              setProxyEnabled(data.checked)
+              setProxySaved(false)
+              setProxyError('')
+            }}
+            label={t('settings.proxyEnable')}
+          />
+          <div className={styles.formGrid}>
+            <Text className={styles.formLabel}>{t('settings.proxyUrl')}</Text>
+            <Input
+              size="small"
+              value={proxyUrl}
+              placeholder={t('settings.proxyUrlPlaceholder')}
+              disabled={!proxyEnabled}
+              onChange={(_, data) => {
+                setProxyUrl(data.value)
+                setProxySaved(false)
+                setProxyError('')
+              }}
+            />
+          </div>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+            <Button size="small" onClick={handleSaveProxy} disabled={savingProxy}>
+              {t('settings.proxySave')}
+            </Button>
+            {proxyError && <Text size="small" className={styles.noUpdate}>{proxyError}</Text>}
+            {proxySaved && !proxyError && (
+              <Text size="small" style={{ color: tokens.colorPaletteGreenForeground1 }}>
+                {t('settings.proxySaved')}
+              </Text>
+            )}
+          </div>
+          <Text size="small" style={{ color: tokens.colorNeutralForeground3 }}>
+            {t('settings.proxyDesc')}
           </Text>
         </div>
       </Card>
